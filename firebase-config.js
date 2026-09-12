@@ -1,3 +1,14 @@
+// Import the functions you need from the SDKs you need
+
+import { initializeApp } from "firebase/app";
+
+import { getAnalytics } from "firebase/analytics";
+
+// TODO: Add SDKs for Firebase products that you want to use
+
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+
 // FIREBASE CONFIG — fill this in with YOUR project's values.
 // Get these from: Firebase console → Project settings → General
 // → "Your apps" → Web app → SDK setup and configuration.
@@ -6,12 +17,17 @@ import { getAuth } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-aut
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID",
+  apiKey: "AIzaSyDElHAfFkcAi26I8Z6PxLPf7VMU33fc6mk",
+
+  authDomain: "edison-sot.firebaseapp.com",
+
+  projectId: "edison-sot",
+
+  storageBucket: "edison-sot.firebasestorage.app",
+
+  messagingSenderId: "33778528183",
+
+  appId: "1:33778528183:web:ebc6bd8d110d73feec8232"
 };
 
 // MASTER GOD — the one account nobody (including Masters) can
@@ -23,3 +39,10 @@ export const MASTER_GOD_UID = "PUT_YOUR_MASTER_GOD_UID_HERE";
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+
+
+// Initialize Firebase
+
+const app = initializeApp(firebaseConfig);
+
+const analytics = getAnalytics(app);
