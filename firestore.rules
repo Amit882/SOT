@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// Paste this into: Firebase console → Firestore Database → Rules tab.
+// Replace MASTER_GOD_UID_HERE with your real Master God UID.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function MASTER_GOD_UID() { return "MASTER_GOD_UID_HERE"; }
+
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    function isApproved() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.approved == true;
+    }
+    function isManager() {
+      return isApproved() && (myRole() == "master" || myRole() == "master_god");
+    }
+    function canEditSots() {
+      return isApproved() && (myRole() == "editor" || myRole() == "master" || myRole() == "master_god");
+    }
+
+    match /users/{userId} {
+      // Anyone signed in can create their OWN profile once, at signup.
+      allow create: if request.auth.uid == userId;
+
+      // You can always read your own profile (to check approval status).
+      // Managers (master / master_god) can read everyone.
+      allow read: if request.auth.uid == userId || isManager();
+
+      // Nobody may ever touch the Master God's own document except
+      // the Master God themself.
+      allow update, delete: if userId == MASTER_GOD_UID()
+        ? request.auth.uid == MASTER_GOD_UID()
+        : isManager();
+    }
+
+    match /sots/{sotId} {
+      // Every approved user (including viewers) can read/search.
+      allow read: if isApproved();
+      // Only editor, master, master_god can add or change entries.
+      allow create, update, delete: if canEditSots();
+    }
+  }
+}

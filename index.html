@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SOT Match — Construction lookup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="screen-login" class="screen">
+  <div class="login-card">
+    <div class="brand"><span class="brand-mark">SOT</span><span class="brand-name">Match</span></div>
+    <p class="brand-sub">Construction lookup for Edison Footwear</p>
+
+    <form id="form-login" class="stack">
+      <label class="field"><span>Email</span><input type="email" id="login-email" required /></label>
+      <label class="field"><span>Password</span><input type="password" id="login-password" required /></label>
+      <div id="login-error" class="error-text" hidden></div>
+      <button type="submit" class="btn btn-primary">Sign in</button>
+    </form>
+    <button id="show-signup" class="btn-link">Need an account? Request access</button>
+
+    <form id="form-signup" class="stack" hidden>
+      <label class="field"><span>Full name</span><input type="text" id="signup-name" required /></label>
+      <label class="field"><span>Email</span><input type="email" id="signup-email" required /></label>
+      <label class="field"><span>Password</span><input type="password" id="signup-password" required /></label>
+      <div id="signup-error" class="error-text" hidden></div>
+      <button type="submit" class="btn btn-primary">Request access</button>
+      <button type="button" id="show-login" class="btn-link">Back to sign in</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ PENDING ============ -->
+<div id="screen-pending" class="screen" hidden>
+  <div class="login-card">
+    <div class="brand"><span class="brand-mark">SOT</span><span class="brand-name">Match</span></div>
+    <h2 class="pending-title">Waiting on approval</h2>
+    <p class="pending-text">A Master or Master God needs to approve your account before you can sign in.</p>
+    <button id="pending-signout" class="btn btn-secondary">Sign out</button>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="screen-app" class="app-shell" hidden>
+  <aside class="sidebar">
+    <div class="brand brand-compact"><span class="brand-mark">SOT</span><span class="brand-name">Match</span></div>
+    <nav class="nav">
+      <button class="nav-item active" data-tab="tab-match"><span class="nav-icon">◇</span> Image match</button>
+      <button class="nav-item" data-tab="tab-search"><span class="nav-icon">#</span> Article search</button>
+      <button class="nav-item" data-tab="tab-upload" id="nav-upload"><span class="nav-icon">＋</span> Add SOT</button>
+      <button class="nav-item" data-tab="tab-import" id="nav-import"><span class="nav-icon">⇩</span> Import Excel</button>
+      <button class="nav-item" data-tab="tab-users" id="nav-users"><span class="nav-icon">◈</span> Users</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="user-chip"><span id="user-name">—</span><span id="user-role" class="role-pill">—</span></div>
+      <button id="signout-btn" class="btn-link">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- Image match -->
+    <section id="tab-match" class="tab active">
+      <header class="tab-head"><h1>Match a construction</h1><p>Upload a photo — compared in your browser against every SOT on file.</p></header>
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept="image/*" hidden />
+        <div id="dropzone-empty"><span class="dropzone-icon">⇧</span><p><strong>Drop a photo</strong> or click to upload</p></div>
+        <img id="preview-img" hidden />
+      </div>
+      <div id="match-status" class="status-line" hidden></div>
+      <div id="match-results" class="result-grid" hidden></div>
+    </section>
+
+    <!-- Article search -->
+    <section id="tab-search" class="tab">
+      <header class="tab-head"><h1>Search by article number</h1><p>Know the number already? Look it up directly.</p></header>
+      <div class="search-row"><input type="text" id="article-input" placeholder="e.g. SOT-0142" /><button id="article-search-btn" class="btn btn-primary">Search</button></div>
+      <div id="search-results" class="result-grid" hidden></div>
+      <div id="search-empty" class="status-line" hidden>No SOT found with that number.</div>
+    </section>
+
+    <!-- Add SOT -->
+    <section id="tab-upload" class="tab">
+      <header class="tab-head"><h1>Add a new SOT entry</h1><p>Fill in every section — this becomes the full card.</p></header>
+      <form id="form-add-sot">
+        <div id="duplicate-notice" class="notice-box" style="display:none;"></div>
+
+        <div class="section-block" style="border:none; padding-top:0; margin-top:0;">
+          <p class="section-label">Photo &amp; article</p>
+          <div class="grid-form">
+            <label class="field"><span>Article number</span><input type="text" id="add-article" required /></label>
+            <label class="field field-wide"><span>Photo</span><input type="file" id="add-photo" accept="image/*" required /></label>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <p class="section-label">Construction reference</p>
+          <div class="grid-form">
+            <label class="field"><span>Construction</span><input type="text" id="add-construction" required /></label>
+            <label class="field"><span>Outsole</span><input type="text" id="add-outsole" /></label>
+            <label class="field"><span>Upper material</span><input type="text" id="add-upper" /></label>
+            <label class="field"><span>Cemented / DIP</span><input type="text" id="add-cemented" /></label>
+            <label class="field"><span>Safety toe</span><select id="add-safety"><option>No</option><option>Yes</option></select></label>
+            <label class="field"><span>WP / NWP</span><select id="add-wp"><option>No</option><option>Yes</option></select></label>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <p class="section-label">Costing / order data</p>
+          <div class="grid-form">
+            <label class="field"><span>Customer</span><input type="text" id="add-customer" /></label>
+            <label class="field"><span>Stage</span><input type="text" id="add-stage" /></label>
+            <label class="field"><span>Size range</span><input type="text" id="add-size" /></label>
+            <label class="field"><span>Gender</span><select id="add-gender"><option>Men</option><option>Women</option><option>Kids</option></select></label>
+            <label class="field"><span>Order qty</span><input type="text" id="add-qty" /></label>
+            <label class="field"><span>Order status</span><input type="text" id="add-status-field" /></label>
+            <label class="field"><span>Received date</span><input type="date" id="add-received" /></label>
+            <label class="field"><span>Delivery date</span><input type="date" id="add-delivery" /></label>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <p class="section-label">Business SOT — operation time (minutes)</p>
+          <table class="sot-table" id="add-sot-table"><tr><th>Operation</th><th>Minutes</th><th></th></tr></table>
+          <button type="button" id="add-sot-row" class="btn-small" style="margin-top:10px;">+ Add another operation</button>
+          <p class="status-line" style="margin-top:10px;">Total: <span id="add-sot-total">0.0</span> min</p>
+        </div>
+
+        <div class="section-block">
+          <p class="section-label">Efficiency &amp; output metrics</p>
+          <div class="grid-form">
+            <label class="field"><span>Assembly OWE</span><input type="text" id="add-assembly-owe" /></label>
+            <label class="field"><span>Assembly manpower (D)</span><input type="number" id="add-assembly-manpower" /></label>
+            <label class="field"><span>Target output/hr avg (Assembly)</span><input type="number" id="add-target-assembly" /></label>
+            <label class="field"><span>Highest possible output/hr</span><input type="number" id="add-highest-output" /></label>
+            <label class="field"><span>Stitching OWE</span><input type="text" id="add-stitching-owe" /></label>
+            <label class="field"><span>Stitching manpower (D)</span><input type="number" id="add-stitching-manpower" /></label>
+            <label class="field"><span>Target output/hr avg (Sewing)</span><input type="number" id="add-target-sewing" /></label>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <p class="section-label">Notes</p>
+          <div class="grid-form">
+            <label class="field field-wide"><span>Special note</span><input type="text" id="add-special-note" /></label>
+            <label class="field"><span>Tech. data</span><input type="text" id="add-tech-data" /></label>
+            <label class="field"><span>Physical sample</span><input type="text" id="add-physical-sample" /></label>
+            <label class="field"><span>Sample autopsy</span><input type="text" id="add-sample-autopsy" /></label>
+            <label class="field"><span>Recommendation</span><select id="add-recommendation"><option value="">—</option><option>Recommended</option><option>Not recommended</option></select></label>
+          </div>
+        </div>
+
+        <div id="add-status" class="status-line" hidden style="margin-top:20px;"></div>
+        <button type="submit" class="btn btn-primary" style="margin-top:20px;">Save entry</button>
+      </form>
+    </section>
+
+    <!-- Excel import -->
+    <section id="tab-import" class="tab">
+      <header class="tab-head"><h1>Import from Excel</h1><p>Upload a costing workbook in the standard layout (article cards with photos). Each article is detected automatically.</p></header>
+      <label class="field field-wide" style="max-width:420px;">
+        <span>Excel file (.xlsx)</span>
+        <input type="file" id="import-file" accept=".xlsx" />
+      </label>
+      <div id="import-status" class="status-line" hidden></div>
+      <div id="import-preview"></div>
+      <button id="import-confirm-btn" class="btn btn-primary" style="margin-top:16px; display:none;">Confirm import</button>
+    </section>
+
+    <!-- Users -->
+    <section id="tab-users" class="tab">
+      <header class="tab-head"><h1>Users</h1><p>Approve new requests, or change what someone can do.</p></header>
+      <div id="pending-users">
+        <h3 class="section-label">Awaiting approval</h3>
+        <div id="pending-list" class="user-list"></div>
+      </div>
+      <div>
+        <h3 class="section-label">All users</h3>
+        <div id="all-users-list" class="user-list"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ Detail modal ============ -->
+<div class="modal-backdrop" id="modal-backdrop" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <img id="modal-img" src="" alt="" />
+      <div class="modal-head-info">
+        <span class="article-id" id="modal-article"></span>
+        <h2 id="modal-name"></h2>
+        <span id="modal-version" class="version-tag" style="display:none;"></span>
+      </div>
+      <button class="modal-close" id="modal-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="section-block" style="border:none; padding-top:0; margin-top:0;">
+        <p class="section-label">Construction reference</p>
+        <div class="kv-grid" id="modal-construction"></div>
+      </div>
+      <div class="section-block">
+        <p class="section-label">Costing / order data</p>
+        <div class="kv-grid" id="modal-costing"></div>
+      </div>
+      <div class="section-block">
+        <p class="section-label">Business SOT (operation time, minutes)</p>
+        <table class="sot-table" id="modal-sot-table"></table>
+      </div>
+      <div class="section-block" id="modal-efficiency-block">
+        <p class="section-label">Efficiency &amp; output metrics</p>
+        <div class="kv-grid" id="modal-efficiency"></div>
+      </div>
+      <div class="section-block" id="modal-notes-block">
+        <p class="section-label">Notes</p>
+        <div class="kv-grid" id="modal-notes"></div>
+      </div>
+      <div class="section-block" id="modal-history-block">
+        <p class="section-label">Other versions of this article</p>
+        <div class="history-list" id="modal-history"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="firebase-config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
