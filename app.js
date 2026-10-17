@@ -135,6 +135,11 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById(btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "tab-upload" && editingId) {
+      exitEditMode();
+      document.getElementById("form-add-sot").reset();
+      resetSotTable();
+    }
   });
 });
 
@@ -346,24 +351,41 @@ function collectAddForm() {
   };
 }
 
+let editingId = null; // set when the Add form is being used to edit an existing doc, instead of creating one
+
 document.getElementById("form-add-sot").addEventListener("submit", async (e) => {
   e.preventDefault();
   const statusBox = document.getElementById("add-status");
-  statusBox.hidden = false; statusBox.textContent = "Uploading photo…";
+  statusBox.hidden = false;
   const photoFile = document.getElementById("add-photo").files[0];
 
   try {
-    const photoUrl = await uploadToCloudinary(photoFile);
-    statusBox.textContent = "Generating embedding…";
-    const embedding = await embedImage(photoUrl);
-    statusBox.textContent = "Saving…";
-
     const formData = collectAddForm();
-    const isNewVersion = await saveSotWithVersioning({ ...formData, photoUrl, embedding });
 
-    statusBox.textContent = isNewVersion
-      ? `Saved as a new version of ${formData.article}. Previous data kept as history.`
-      : "Saved.";
+    if (editingId) {
+      // Editing in place: only touch the photo/embedding if a new photo was chosen.
+      statusBox.textContent = "Saving changes…";
+      const update = { ...formData };
+      if (photoFile) {
+        statusBox.textContent = "Uploading new photo…";
+        update.photoUrl = await uploadToCloudinary(photoFile);
+        statusBox.textContent = "Generating embedding…";
+        update.embedding = await embedImage(update.photoUrl);
+      }
+      await updateDoc(doc(db, "sots", editingId), update);
+      statusBox.textContent = "Entry updated.";
+      exitEditMode();
+    } else {
+      statusBox.textContent = "Uploading photo…";
+      const photoUrl = await uploadToCloudinary(photoFile);
+      statusBox.textContent = "Generating embedding…";
+      const embedding = await embedImage(photoUrl);
+      statusBox.textContent = "Saving…";
+      const isNewVersion = await saveSotWithVersioning({ ...formData, photoUrl, embedding });
+      statusBox.textContent = isNewVersion
+        ? `Saved as a new version of ${formData.article}. Previous data kept as history.`
+        : "Saved.";
+    }
     dupNotice.style.display = "none";
     e.target.reset();
     resetSotTable();
@@ -371,6 +393,61 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
     statusBox.textContent = "Failed: " + err.message;
   }
 });
+
+// Fills the Add-SOT form with an existing entry's data and switches
+// the form into "edit this exact document" mode (no versioning).
+function enterEditMode(item) {
+  editingId = item.id;
+  document.getElementById("add-article").value = item.article || "";
+  document.getElementById("add-photo").required = false; // keep existing photo unless a new one is chosen
+  document.getElementById("add-construction").value = item.construction?.Construction || "";
+  document.getElementById("add-outsole").value = item.construction?.Outsole || "";
+  document.getElementById("add-upper").value = item.construction?.["Upper Material"] || "";
+  document.getElementById("add-cemented").value = item.construction?.["Cemented/DIP"] || "";
+  document.getElementById("add-safety").value = item.construction?.["Safety Toe"] || "No";
+  document.getElementById("add-wp").value = item.construction?.["WP/NWP"] || "No";
+  document.getElementById("add-customer").value = item.costing?.Customer || "";
+  document.getElementById("add-stage").value = item.costing?.Stage || "";
+  document.getElementById("add-size").value = item.costing?.["Size Range"] || "";
+  document.getElementById("add-gender").value = item.costing?.Gender || "Men";
+  document.getElementById("add-qty").value = item.costing?.["Order Qty"] || "";
+  document.getElementById("add-status-field").value = item.costing?.["Order Status"] || "";
+  document.getElementById("add-received").value = item.costing?.["Received Date"] || "";
+  document.getElementById("add-delivery").value = item.costing?.["Delivery Date"] || "";
+  document.getElementById("add-assembly-owe").value = item.efficiency?.["Assembly OWE"] || "";
+  document.getElementById("add-assembly-manpower").value = item.efficiency?.["Assembly Manpower (D)"] || "";
+  document.getElementById("add-target-assembly").value = item.efficiency?.["Target Output/HR Avg (Assembly)"] || "";
+  document.getElementById("add-highest-output").value = item.efficiency?.["Highest Possible Output/HR"] || "";
+  document.getElementById("add-stitching-owe").value = item.efficiency?.["Stitching OWE"] || "";
+  document.getElementById("add-stitching-manpower").value = item.efficiency?.["Stitching Manpower (D)"] || "";
+  document.getElementById("add-target-sewing").value = item.efficiency?.["Target Output/HR Avg (Sewing)"] || "";
+  document.getElementById("add-special-note").value = item.notes?.["Special Note"] || "";
+  document.getElementById("add-tech-data").value = item.notes?.["Tech. Data"] || "";
+  document.getElementById("add-physical-sample").value = item.notes?.["Physical Sample"] || "";
+  document.getElementById("add-sample-autopsy").value = item.notes?.["Sample Autopsy"] || "";
+  document.getElementById("add-recommendation").value = item.notes?.Recommendation || "";
+
+  resetSotTable();
+  Object.entries(item.businessSOT || {}).forEach(([op, min]) => {
+    const lockedRow = Array.from(sotTable.querySelectorAll("tr")).find((tr) => tr.querySelector(".sot-op")?.value === op);
+    if (lockedRow) lockedRow.querySelector(".sot-min").value = min;
+    else addSotRow(op, min);
+  });
+  updateSotTotal();
+
+  document.getElementById("form-add-sot").querySelector('button[type="submit"]').textContent = "Update entry";
+  document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+  document.querySelector('[data-tab="tab-upload"]').classList.add("active");
+  document.getElementById("tab-upload").classList.add("active");
+  backdrop.hidden = true;
+}
+
+function exitEditMode() {
+  editingId = null;
+  document.getElementById("add-photo").required = true;
+  document.getElementById("form-add-sot").querySelector('button[type="submit"]').textContent = "Save entry";
+}
 
 // ============================================================
 // Detail modal — construction, costing, Business SOT, efficiency,
@@ -396,6 +473,10 @@ async function openModal(item) {
   document.getElementById("modal-name").textContent = item.construction?.Construction || "Untitled";
   const vTag = document.getElementById("modal-version");
   vTag.style.display = "none";
+
+  const editBtn = document.getElementById("modal-edit-btn");
+  editBtn.style.display = canUpload(currentProfile.role) ? "inline-block" : "none";
+  editBtn.onclick = () => enterEditMode(item);
 
   kvGrid(document.getElementById("modal-construction"), item.construction);
   kvGrid(document.getElementById("modal-costing"), item.costing);
