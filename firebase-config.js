@@ -1,48 +1,23 @@
-// Import the functions you need from the SDKs you need
 
-import { initializeApp } from "firebase/app";
-
-import { getAnalytics } from "firebase/analytics";
-
-// TODO: Add SDKs for Firebase products that you want to use
-
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-
-// FIREBASE CONFIG — fill this in with YOUR project's values.
-// Get these from: Firebase console → Project settings → General
-// → "Your apps" → Web app → SDK setup and configuration.
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
+// Firebase project configuration
 const firebaseConfig = {
   apiKey: "AIzaSyDElHAfFkcAi26I8Z6PxLPf7VMU33fc6mk",
-
   authDomain: "edison-sot.firebaseapp.com",
-
   projectId: "edison-sot",
-
   storageBucket: "edison-sot.firebasestorage.app",
-
   messagingSenderId: "33778528183",
-
   appId: "1:33778528183:web:ebc6bd8d110d73feec8232"
 };
 
-// MASTER GOD — the one account nobody (including Masters) can
-// demote or delete. Put the real UID here after that account
-// signs up once (Firebase console → Authentication → find the
-// user → copy their User UID).
+// Replace this placeholder with your actual Firebase user UID
 export const MASTER_GOD_UID = "PUT_YOUR_MASTER_GOD_UID_HERE";
 
+// Initialize Firebase only once
 const app = initializeApp(firebaseConfig);
+
 export const auth = getAuth(app);
 export const db = getFirestore(app);
-
-
-// Initialize Firebase
-
-const app = initializeApp(firebaseConfig);
-
-const analytics = getAnalytics(app);
