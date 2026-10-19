@@ -14,7 +14,7 @@ const firebaseConfig = {
 };
 
 // Replace this placeholder with your actual Firebase user UID
-export const MASTER_GOD_UID = "gQrZQmxec5MlqBiLKjfLbyOzRfk1";
+export const MASTER_GOD_UID = "4O2sYhg8efNq9YkNsdDsAy6oDA03";
 
 // Initialize Firebase only once
 const app = initializeApp(firebaseConfig);
