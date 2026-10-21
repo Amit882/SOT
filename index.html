@@ -67,6 +67,7 @@
     <!-- Image match -->
     <section id="tab-match" class="tab active">
       <header class="tab-head"><h1>Match a construction</h1><p>Upload a photo — compared in your browser against every SOT on file.</p></header>
+      <div class="buyer-filter" id="buyer-filter-match"></div>
       <div class="dropzone" id="dropzone">
         <input type="file" id="file-input" accept="image/*" hidden />
         <div id="dropzone-empty"><span class="dropzone-icon">⇧</span><p><strong>Drop a photo</strong> or click to upload</p></div>
@@ -78,10 +79,17 @@
 
     <!-- Article search -->
     <section id="tab-search" class="tab">
-      <header class="tab-head"><h1>Search by article number</h1><p>Know the number already? Look it up directly.</p></header>
-      <div class="search-row"><input type="text" id="article-input" placeholder="e.g. SOT-0142" /><button id="article-search-btn" class="btn btn-primary">Search</button></div>
+      <header class="tab-head"><h1>Search by article number</h1><p>Type a few letters or digits — matching articles appear as you type.</p></header>
+      <div class="buyer-filter" id="buyer-filter-search"></div>
+      <div class="search-row">
+        <div class="search-wrap">
+          <input type="text" id="article-input" placeholder="e.g. A21U or 1713" autocomplete="off" />
+          <div id="suggest-box" class="suggest-box" hidden></div>
+        </div>
+        <button id="article-search-btn" class="btn btn-primary">Search</button>
+      </div>
       <div id="search-results" class="result-grid" hidden></div>
-      <div id="search-empty" class="status-line" hidden>No SOT found with that number.</div>
+      <div id="search-empty" class="status-line" hidden>No SOT found.</div>
     </section>
 
     <!-- Add SOT -->
