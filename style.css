@@ -147,3 +147,7 @@ body { margin:0; font-family:var(--font-sans); background:var(--bg); color:var(-
 .suggest-item .s-art { font-family:var(--font-mono); font-size:13px; color:var(--accent); }
 .suggest-item .s-art mark { background:#F3E3C9; color:inherit; border-radius:2px; }
 .suggest-item .s-sub { font-size:12px; color:var(--ink-muted); }
+
+.score-strong { background:#DDEBDD !important; color:#2F5D2F !important; }
+.score-possible { background:#F3E8CC !important; color:#7A5A12 !important; }
+.score-weak { background:#EFE4E0 !important; color:#8A4A3A !important; }
