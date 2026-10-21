@@ -37,9 +37,21 @@ async function embedImage(fileOrUrl) {
   return Array.from(output.data);
 }
 function cosineSimilarity(a, b) {
-  let dot = 0;
-  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
-  return dot; // vectors are normalized, so dot product == cosine similarity
+  // CLIP embeddings are NOT unit length, so divide by both lengths.
+  // Result is between -1 and 1 (1 = identical look); never above 100%.
+  let dot = 0, na = 0, nb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  if (!na || !nb) return 0; // entry without a photo
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+// How to read a score: CLIP photo-vs-photo scores of unrelated shoes still sit around 50-65%,
+// so only the higher bands mean "looks alike". Adjust these cut-offs if needed.
+function matchBand(score) {
+  if (score >= 0.85) return { cls: "strong", label: "Strong match" };
+  if (score >= 0.75) return { cls: "possible", label: "Possible match" };
+  return { cls: "weak", label: "Weak match" };
 }
 
 // ============================================================
@@ -194,7 +206,7 @@ function renderResults(container, items, showScore) {
         <span class="result-article">${item.article || "—"}</span>
         <p class="result-name">${item.construction?.Construction || "Untitled"}</p>
         <p class="result-material">${item.construction?.Outsole || ""}</p>
-        ${showScore ? `<span class="result-score">${Math.round(item.score * 100)}% match</span>` : ""}
+        ${showScore ? `<span class="result-score score-${matchBand(item.score).cls}">${Math.round(Math.max(0, item.score) * 100)}% · ${matchBand(item.score).label}</span>` : ""}
       </div>`;
     card.addEventListener("click", () => openModal(item));
     container.appendChild(card);
@@ -312,8 +324,12 @@ async function renderMatchResults() {
       : "No SOT with a photo for the selected buyer(s).";
     return;
   }
-  status.hidden = true;
-  renderResults(results, scored.slice(0, 6), true);
+  const top = scored.slice(0, 6);
+  renderResults(results, top, true);
+  if (top[0].score < 0.75) {
+    status.hidden = false;
+    status.textContent = "No close match — this looks like a new construction. If it really is new, add it with “Add SOT”.";
+  } else status.hidden = true;
 }
 
 // ============================================================
