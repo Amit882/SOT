@@ -721,6 +721,7 @@ async function extractSheetImages(zip) {
   const wbRels = rels(await parse("xl/_rels/workbook.xml.rels"));
   const result = {};
   for (const sh of wb.getElementsByTagName("sheet")) {
+    if (["hidden", "veryHidden"].includes(sh.getAttribute("state"))) continue; // skip hidden sheets
     const name = sh.getAttribute("name");
     const target = wbRels[sh.getAttributeNS(REL, "id")]?.getAttribute("Target");
     if (!target) continue;
@@ -761,6 +762,47 @@ function pickImageForArticle(images, col) {
   const im = near[0];
   return `data:image/${im.ext === "jpg" ? "jpeg" : im.ext};base64,${im.base64}`;
 }
+
+// Reads sheet names/states from workbook.xml, so hidden sheets can be skipped.
+async function listSheets(zip) {
+  const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const parse = async (path) => {
+    const f = zip.file(path);
+    return f ? new DOMParser().parseFromString(await f.async("string"), "application/xml") : null;
+  };
+  const wb = await parse("xl/workbook.xml");
+  const relDoc = await parse("xl/_rels/workbook.xml.rels");
+  const targets = {};
+  if (relDoc) for (const el of relDoc.getElementsByTagName("Relationship")) targets[el.getAttribute("Id")] = el.getAttribute("Target");
+  return [...wb.getElementsByTagName("sheet")].map((sh) => {
+    const t = targets[sh.getAttributeNS(REL, "id")] || "";
+    return {
+      name: sh.getAttribute("name"),
+      hidden: ["hidden", "veryHidden"].includes(sh.getAttribute("state")),
+      path: "xl/" + t.replace(/^\/?(xl\/)?/, ""),
+    };
+  });
+}
+
+// SheetJS's own zip reader breaks on some files ("Bad compressed size").
+// JSZip is more forgiving, so we open the file with JSZip and re-pack only
+// what's needed (no photos, no hidden sheets) into a clean zip for SheetJS.
+async function readWorkbookRobust(XLSX, JSZip, zip, sheets) {
+  const skip = new Set();
+  sheets.filter((s) => s.hidden).forEach((s) => {
+    skip.add(s.path);
+    skip.add(s.path.replace("worksheets/", "worksheets/_rels/") + ".rels");
+  });
+  const clean = new JSZip();
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir) continue;
+    if (skip.has(path)) continue;
+    if (/^xl\/(media|drawings|printerSettings|richData|embeddings)\//.test(path)) continue;
+    clean.file(path, await entry.async("uint8array"));
+  }
+  const out = await clean.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  return XLSX.read(out, { type: "array", sheets: sheets.filter((s) => !s.hidden).map((s) => s.name) });
+}
 // ---- PARSER END ----
 
 let importQueue = []; // [{article, construction, costing, businessSOT, efficiency, notes, imageDataUrl}]
@@ -777,19 +819,22 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
       import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm"),
     ]);
     const buf = await file.arrayBuffer();
-    const workbook = XLSX.read(buf, { type: "array" });
+    const zip = await JSZip.loadAsync(buf);
+    const sheets = await listSheets(zip);
+    const workbook = await readWorkbookRobust(XLSX, JSZip, zip, sheets);
 
-    // Photos are optional: if the zip can't be read for images, still import the data.
+    // Photos are optional: if they can't be read, still import the data.
     let imagesBySheet = {};
     try {
-      const zip = await JSZip.loadAsync(buf);
+      statusBox.textContent = "Reading photos…";
       imagesBySheet = await extractSheetImages(zip);
     } catch (imgErr) {
       console.warn("Could not read photos from workbook:", imgErr);
     }
 
     importQueue = [];
-    for (const sheetName of workbook.SheetNames) {
+    for (const { name: sheetName, hidden } of sheets) {
+      if (hidden || !workbook.Sheets[sheetName]) continue; // never read hidden sheets
       const articles = parseArticleSheet(XLSX, workbook.Sheets[sheetName]);
       for (const a of articles) {
         importQueue.push({ ...a, imageDataUrl: pickImageForArticle(imagesBySheet[sheetName], a.col) });
