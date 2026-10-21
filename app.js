@@ -578,28 +578,192 @@ function renderUserList(container, users, isPendingList) {
 // ============================================================
 // Excel import
 // ============================================================
-// KNOWN_LABELS maps a row label (as it appears in column A of an
-// article-card sheet) to where it lands in our schema.
-const KNOWN_LABELS = [
-  { label: "customer", target: "costing", key: "Customer" },
-  { label: "ordered yet", target: "costing", key: "Ordered Yet" },
-  { label: "stage", target: "costing", key: "Stage" },
-  { label: "types of shoe", target: "costing", key: "Types of Shoe" },
-  { label: "received date", target: "costing", key: "Received Date" },
-  { label: "delivery date", target: "costing", key: "Delivery Date" },
-  { label: "size range", target: "costing", key: "Size Range" },
-  { label: "gender", target: "costing", key: "Gender" },
-  { label: "initial order qty", target: "costing", key: "Order Qty" },
-  { label: "order status", target: "costing", key: "Order Status" },
-  { label: "upper material", target: "construction", key: "Upper Material" },
-  { label: "safety toe", target: "construction", key: "Safety Toe" },
-  { label: "wp/nwp", target: "construction", key: "WP/NWP" },
-  { label: "cemented/dip", target: "construction", key: "Cemented/DIP" },
-  { label: "construction", target: "construction", key: "Construction" },
-  { label: "outsole", target: "construction", key: "Outsole" },
-];
+// Layout of every article-card sheet (same on sheets 9..1):
+//  - Row 1: "Article Name" in column A, then one article per
+//    3-column block (Business SOT | Factory OT | IE SOT).
+//  - Top section (until the "Time" row): customer, construction etc.
+//  - Operation rows (between "Time" and "Total"): only the FIRST
+//    column of each block (Business SOT) is imported.
+//  - Below: efficiency rows, Special Note, Tech. Data, etc.
+//  - Each article's photo is anchored at the block's first column.
 
-let importQueue = []; // [{article, construction, costing, imageDataUrl}]
+// ---- PARSER START ----
+const normLabel = (s) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase().replace(/\s*\/\s*/g, "/");
+
+const TOP_LABELS = {
+  "customer": ["costing", "Customer"],
+  "ordered yet": ["costing", "Ordered Yet"],
+  "stage": ["costing", "Stage"],
+  "types of shoe": ["costing", "Types of Shoe"],
+  "version": ["costing", "Version"],
+  "received date": ["costing", "Received Date"],
+  "delivery date": ["costing", "Delivery Date"],
+  "size range": ["costing", "Size Range"],
+  "gender": ["costing", "Gender"],
+  "initial order qty": ["costing", "Order Qty"],
+  "order status": ["costing", "Order Status"],
+  "upper material": ["construction", "Upper Material"],
+  "safety toe": ["construction", "Safety Toe"],
+  "wp/nwp": ["construction", "WP/NWP"],
+  "cemented/dip": ["construction", "Cemented/DIP"],
+  "construction": ["construction", "Construction"],
+  "outsole": ["construction", "Outsole"],
+};
+const DATE_KEYS = new Set(["Received Date", "Delivery Date"]);
+const OP_BY_NORM = Object.fromEntries(BUSINESS_SOT_OPERATIONS.map((op) => [normLabel(op), op]));
+
+// Efficiency rows are matched by what the label starts with.
+function efficiencyKey(label) {
+  if (label.startsWith("assembly owe")) return "Assembly OWE";
+  if (label.startsWith("assembly manpower")) return "Assembly Manpower (D)";
+  if (label.startsWith("target output/hr") && label.includes("assemb")) return "Target Output/HR Avg (Assembly)";
+  if (label.startsWith("highest possible")) return "Highest Possible Output/HR";
+  if (label.startsWith("stitching owe")) return "Stitching OWE";
+  if (label.startsWith("stitching manpower")) return "Stitching Manpower (D)";
+  if (label.startsWith("target output/hr") && label.includes("sewing")) return "Target Output/HR Avg (Sewing)";
+  return null;
+}
+const NOTE_KEYS = {
+  "special note:": "Special Note", "special note": "Special Note",
+  "tech. data": "Tech. Data", "tech data": "Tech. Data",
+  "physical sample": "Physical Sample",
+  "sample autopsy": "Sample Autopsy",
+  "recommendation": "Recommendation",
+};
+
+function cleanCell(v) {
+  if (v === undefined || v === null || v === "") return "";
+  if (typeof v === "number") return Math.round(v * 100) / 100;
+  return String(v).trim();
+}
+
+// Reads one sheet's rows into [{article, construction, costing, businessSOT, efficiency, notes, col}]
+function parseArticleSheet(XLSX, sheet) {
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
+  if (!rows[0] || normLabel(rows[0][0]) !== "article name") return [];
+
+  let timeRow = -1, totalRow = -1;
+  rows.forEach((r, i) => {
+    const l = normLabel(r[0]);
+    if (l === "time" && timeRow < 0) timeRow = i;
+    if (l === "total" && timeRow >= 0 && totalRow < 0) totalRow = i;
+  });
+  if (timeRow < 0) timeRow = 24;
+  if (totalRow < 0) totalRow = timeRow + 28;
+
+  const out = [];
+  const header = rows[0];
+  for (let col = 1; col < header.length; col++) {
+    const article = String(header[col] ?? "").trim();
+    if (!article) continue;
+    const get = (r) => (rows[r] ? rows[r][col] : "");
+
+    const construction = {}, costing = {}, businessSOT = {}, efficiency = {}, notes = {};
+
+    // top section: first occurrence of each label wins
+    const seen = new Set();
+    for (let r = 1; r < timeRow; r++) {
+      const label = normLabel(rows[r][0]);
+      const t = TOP_LABELS[label];
+      if (!t || seen.has(label)) continue;
+      seen.add(label);
+      let v = get(r);
+      if (v === "" || v === undefined) continue;
+      if (DATE_KEYS.has(t[1]) && typeof v === "number") {
+        const d = XLSX.SSF.parse_date_code(v);
+        v = `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+      }
+      (t[0] === "costing" ? costing : construction)[t[1]] = cleanCell(v);
+    }
+    construction.Construction = construction.Construction || "";
+
+    // Business SOT minutes (first column of the block only)
+    for (let r = timeRow + 1; r < totalRow; r++) {
+      const op = OP_BY_NORM[normLabel(rows[r][0])];
+      const v = get(r);
+      if (op && typeof v === "number") businessSOT[op] = Math.round(v * 100) / 100;
+    }
+
+    // efficiency + notes (below the Total row)
+    for (let r = totalRow + 1; r < rows.length; r++) {
+      const label = normLabel(rows[r][0]);
+      if (!label) continue;
+      const effKey = efficiencyKey(label);
+      if (effKey) { const v = cleanCell(get(r)); if (v !== "") efficiency[effKey] = v; continue; }
+      const noteKey = NOTE_KEYS[label];
+      if (noteKey) {
+        let v = cleanCell(get(r));
+        // "Special Note:" has its text on the row underneath the label
+        if (v === "" && noteKey === "Special Note") v = cleanCell(get(r + 1));
+        if (v !== "") notes[noteKey] = v;
+      }
+    }
+
+    out.push({ article, construction, costing, businessSOT, efficiency, notes, col });
+  }
+  return out;
+}
+
+// Maps sheet name -> [{col, row, dataUrl}] using the drawing anchors,
+// so each photo is matched to its article by position (not by order).
+async function extractSheetImages(zip) {
+  const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const parse = async (path) => {
+    const f = zip.file(path);
+    return f ? new DOMParser().parseFromString(await f.async("string"), "application/xml") : null;
+  };
+  const rels = (doc) => {
+    const m = {};
+    if (doc) for (const el of doc.getElementsByTagName("Relationship")) m[el.getAttribute("Id")] = el;
+    return m;
+  };
+  const wb = await parse("xl/workbook.xml");
+  const wbRels = rels(await parse("xl/_rels/workbook.xml.rels"));
+  const result = {};
+  for (const sh of wb.getElementsByTagName("sheet")) {
+    const name = sh.getAttribute("name");
+    const target = wbRels[sh.getAttributeNS(REL, "id")]?.getAttribute("Target");
+    if (!target) continue;
+    const sheetFile = target.replace(/^\/?(xl\/)?/, "");
+    const sheetRels = rels(await parse(`xl/worksheets/_rels/${sheetFile.split("/").pop()}.rels`));
+    const drawingRel = Object.values(sheetRels).find((r) => /\/drawing$/.test(r.getAttribute("Type")));
+    if (!drawingRel) continue;
+    const drawingFile = drawingRel.getAttribute("Target").split("/").pop();
+    const drawing = await parse(`xl/drawings/${drawingFile}`);
+    const dRels = rels(await parse(`xl/drawings/_rels/${drawingFile}.rels`));
+    const list = [];
+    for (const anchor of drawing.documentElement.children) {
+      const from = [...anchor.children].find((c) => c.localName === "from");
+      const blip = [...anchor.getElementsByTagName("*")].find((e) => e.localName === "blip");
+      if (!from || !blip) continue;
+      const rid = blip.getAttributeNS(REL, "embed");
+      const mediaTarget = dRels[rid]?.getAttribute("Target");
+      if (!mediaTarget) continue;
+      const mediaPath = "xl/media/" + mediaTarget.split("/").pop();
+      const ext = mediaPath.split(".").pop().toLowerCase();
+      if (!["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) continue; // browsers can't show emf/wmf
+      const file = zip.file(mediaPath);
+      if (!file) continue;
+      const col = Number([...from.children].find((c) => c.localName === "col").textContent);
+      const row = Number([...from.children].find((c) => c.localName === "row").textContent);
+      list.push({ col, row, ext, base64: await file.async("base64") });
+    }
+    result[name] = list;
+  }
+  return result;
+}
+
+function pickImageForArticle(images, col) {
+  // photo is anchored at the block's first column, near the top of the card
+  const near = (images || []).filter((im) => im.row <= 22 && im.col >= col && im.col <= col + 2);
+  if (!near.length) return null;
+  near.sort((a, b) => a.col - b.col || a.row - b.row);
+  const im = near[0];
+  return `data:image/${im.ext === "jpg" ? "jpeg" : im.ext};base64,${im.base64}`;
+}
+// ---- PARSER END ----
+
+let importQueue = []; // [{article, construction, costing, businessSOT, efficiency, notes, imageDataUrl}]
 
 document.getElementById("import-file").addEventListener("change", async (e) => {
   const file = e.target.files[0];
@@ -614,69 +778,26 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
     ]);
     const buf = await file.arrayBuffer();
     const workbook = XLSX.read(buf, { type: "array" });
-    const zip = await JSZip.loadAsync(buf);
 
-    // Pull every embedded image out of the workbook, in filename
-    // order (image1, image2, ...). NOTE: this assumes images were
-    // inserted in the same left-to-right, sheet-by-sheet order as
-    // the article blocks below — true for the standard costing-sheet
-    // layout, but double-check the preview thumbnails before confirming.
-    const mediaFiles = Object.keys(zip.files)
-      .filter((p) => /^xl\/media\/image\d+\./.test(p))
-      .sort((a, b) => {
-        const na = Number(a.match(/image(\d+)/)[1]);
-        const nb = Number(b.match(/image(\d+)/)[1]);
-        return na - nb;
-      });
-    const images = [];
-    for (const path of mediaFiles) {
-      const blob = await zip.files[path].async("base64");
-      const ext = path.split(".").pop();
-      images.push(`data:image/${ext === "jpg" ? "jpeg" : ext};base64,${blob}`);
+    // Photos are optional: if the zip can't be read for images, still import the data.
+    let imagesBySheet = {};
+    try {
+      const zip = await JSZip.loadAsync(buf);
+      imagesBySheet = await extractSheetImages(zip);
+    } catch (imgErr) {
+      console.warn("Could not read photos from workbook:", imgErr);
     }
 
     importQueue = [];
-    let imgIndex = 0;
-
     for (const sheetName of workbook.SheetNames) {
-      const sheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      if (!rows[0] || String(rows[0][0]).trim().toLowerCase() !== "article name") continue; // skip non-article-card sheets
-
-      // Build label -> row index map from column A
-      const labelRow = {};
-      rows.forEach((r, i) => {
-        const label = String(r[0] || "").trim().toLowerCase();
-        if (label) labelRow[label] = i;
-      });
-
-      // Block-start columns = non-empty cells in the header row, after column 0
-      const headerRow = rows[0];
-      for (let col = 1; col < headerRow.length; col++) {
-        const article = String(headerRow[col] || "").trim();
-        if (!article) continue;
-
-        const construction = {};
-        const costing = {};
-        KNOWN_LABELS.forEach(({ label, target, key }) => {
-          const rIdx = labelRow[label];
-          if (rIdx === undefined) return;
-          const val = rows[rIdx] ? rows[rIdx][col] : "";
-          if (val !== "" && val !== undefined) (target === "costing" ? costing : construction)[key] = val;
-        });
-        construction.Construction = construction.Construction || "";
-
-        importQueue.push({
-          article,
-          construction,
-          costing,
-          imageDataUrl: images[imgIndex] || null,
-        });
-        imgIndex++;
+      const articles = parseArticleSheet(XLSX, workbook.Sheets[sheetName]);
+      for (const a of articles) {
+        importQueue.push({ ...a, imageDataUrl: pickImageForArticle(imagesBySheet[sheetName], a.col) });
       }
     }
 
-    statusBox.textContent = `Found ${importQueue.length} article${importQueue.length === 1 ? "" : "s"}. Review below, then confirm.`;
+    const withPhoto = importQueue.filter((r) => r.imageDataUrl).length;
+    statusBox.textContent = `Found ${importQueue.length} article${importQueue.length === 1 ? "" : "s"} (${withPhoto} with photo). Review below, then confirm.`;
     renderImportPreview();
     document.getElementById("import-confirm-btn").style.display = importQueue.length ? "inline-block" : "none";
   } catch (err) {
@@ -691,7 +812,7 @@ function renderImportPreview() {
     const div = document.createElement("div");
     div.className = "import-row";
     div.innerHTML = `
-      <img src="${row.imageDataUrl || ""}" />
+      ${row.imageDataUrl ? `<img src="${row.imageDataUrl}" />` : `<div class="muted" style="width:56px;height:56px;display:flex;align-items:center;justify-content:center;font-size:10px;border:1px dashed #cdbfa8;border-radius:6px;">no photo</div>`}
       <div><strong>${row.article}</strong><div class="muted" style="font-size:12px;">${row.construction.Construction || "—"} · ${row.construction.Outsole || "—"}</div></div>
       <span class="status" id="import-status-${i}">ready</span>`;
     box.appendChild(div);
@@ -714,9 +835,9 @@ document.getElementById("import-confirm-btn").addEventListener("click", async ()
         article: row.article,
         construction: row.construction,
         costing: row.costing,
-        businessSOT: {},
-        efficiency: {},
-        notes: {},
+        businessSOT: row.businessSOT || {},
+        efficiency: row.efficiency || {},
+        notes: row.notes || {},
         photoUrl,
         embedding,
       });
