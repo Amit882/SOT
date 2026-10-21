@@ -611,6 +611,10 @@ const TOP_LABELS = {
 };
 const DATE_KEYS = new Set(["Received Date", "Delivery Date"]);
 const OP_BY_NORM = Object.fromEntries(BUSINESS_SOT_OPERATIONS.map((op) => [normLabel(op), op]));
+// Some sheets use shorter/older labels for the same operation.
+OP_BY_NORM["edge color"] = "Edge color/Spray";
+OP_BY_NORM["sole stitch"] = "Sole Stitch/Preparation";
+OP_BY_NORM["sole preparation"] = "Sole Stitch/Preparation";
 
 // Efficiency rows are matched by what the label starts with.
 function efficiencyKey(label) {
@@ -656,7 +660,16 @@ function parseArticleSheet(XLSX, sheet) {
   for (let col = 1; col < header.length; col++) {
     const article = String(header[col] ?? "").trim();
     if (!article) continue;
-    const get = (r) => (rows[r] ? rows[r][col] : "");
+    // Value of a cell; cells formatted as % in Excel come back as "75%" (not 0.75).
+    const range = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]) : { s: { r: 0, c: 0 } };
+    const get = (r) => {
+      const raw = rows[r] ? rows[r][col] : "";
+      const cell = sheet[XLSX.utils.encode_cell({ r: r + range.s.r, c: col + range.s.c })];
+      if (cell && typeof cell.v === "number" && typeof cell.z === "string" && cell.z.includes("%")) {
+        return `${Math.round(cell.v * 10000) / 100}%`;
+      }
+      return raw;
+    };
 
     const construction = {}, costing = {}, businessSOT = {}, efficiency = {}, notes = {};
 
@@ -692,10 +705,14 @@ function parseArticleSheet(XLSX, sheet) {
       if (effKey) { const v = cleanCell(get(r)); if (v !== "") efficiency[effKey] = v; continue; }
       const noteKey = NOTE_KEYS[label];
       if (noteKey) {
-        let v = cleanCell(get(r));
-        // "Special Note:" has its text on the row underneath the label
-        if (v === "" && noteKey === "Special Note") v = cleanCell(get(r + 1));
-        if (v !== "") notes[noteKey] = v;
+        // the note's text can span this row and the rows below it (blank label column)
+        const parts = [];
+        for (let k = r; k < rows.length; k++) {
+          if (k > r && normLabel(rows[k][0])) break;
+          const v = cleanCell(get(k));
+          if (v !== "") parts.push(String(v));
+        }
+        if (parts.length) notes[noteKey] = parts.join("\n");
       }
     }
 
@@ -801,7 +818,7 @@ async function readWorkbookRobust(XLSX, JSZip, zip, sheets) {
     clean.file(path, await entry.async("uint8array"));
   }
   const out = await clean.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-  return XLSX.read(out, { type: "array", sheets: sheets.filter((s) => !s.hidden).map((s) => s.name) });
+  return XLSX.read(out, { type: "array", cellNF: true, sheets: sheets.filter((s) => !s.hidden).map((s) => s.name) });
 }
 // ---- PARSER END ----
 
@@ -854,11 +871,17 @@ function renderImportPreview() {
   const box = document.getElementById("import-preview");
   box.innerHTML = "";
   importQueue.forEach((row, i) => {
+    const ops = Object.keys(row.businessSOT || {}).length;
+    const total = Object.values(row.businessSOT || {}).reduce((a, b) => a + Number(b), 0);
+    const effCount = Object.keys(row.efficiency || {}).length;
+    const noteCount = Object.keys(row.notes || {}).length;
+    const line1 = [row.construction.Construction, row.construction.Outsole, row.costing.Customer].filter(Boolean).join(" · ") || "—";
+    const line2 = `Business SOT: ${ops} ops, total ${Math.round(total * 100) / 100} min · Efficiency: ${effCount}/7 · Notes: ${noteCount}`;
     const div = document.createElement("div");
     div.className = "import-row";
     div.innerHTML = `
       ${row.imageDataUrl ? `<img src="${row.imageDataUrl}" />` : `<div class="muted" style="width:56px;height:56px;display:flex;align-items:center;justify-content:center;font-size:10px;border:1px dashed #cdbfa8;border-radius:6px;">no photo</div>`}
-      <div><strong>${row.article}</strong><div class="muted" style="font-size:12px;">${row.construction.Construction || "—"} · ${row.construction.Outsole || "—"}</div></div>
+      <div><strong>${row.article}</strong><div class="muted" style="font-size:12px;">${line1}</div><div class="muted" style="font-size:12px;">${line2}</div></div>
       <span class="status" id="import-status-${i}">ready</span>`;
     box.appendChild(div);
   });
