@@ -117,6 +117,7 @@ onAuthStateChanged(auth, async (user) => {
   currentProfile = snap.exists() ? snap.data() : null;
   if (!currentProfile || !currentProfile.approved) { showScreen("pending"); return; }
   showScreen("app");
+  getAllLatestSots().catch(() => {});
   applyRoleToUI(currentProfile.role);
   document.getElementById("user-name").textContent = currentProfile.name || user.email;
   document.getElementById("user-role").textContent = currentProfile.role.replace("_", " ");
@@ -177,6 +178,7 @@ async function saveSotWithVersioning(sotData) {
     addedBy: currentUser.uid,
     createdAt: serverTimestamp(),
   });
+  invalidateSotCache();
   return isNewVersion;
 }
 
@@ -201,6 +203,69 @@ function renderResults(container, items, showScore) {
 }
 
 // ============================================================
+// Latest-version cache + buyer filter (shared by both search tabs)
+// ============================================================
+let sotCache = null, sotCacheAt = 0;
+function invalidateSotCache() { sotCache = null; }
+async function getAllLatestSots() {
+  if (!sotCache || Date.now() - sotCacheAt > 60000) {
+    const snap = await getDocs(query(collection(db, "sots"), where("isLatest", "==", true)));
+    const list = [];
+    snap.forEach((d) => list.push({ ...d.data(), id: d.id }));
+    sotCache = list; sotCacheAt = Date.now();
+    renderBuyerFilters();
+  }
+  return sotCache;
+}
+
+const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+const buyerKey = (item) => String(item.costing?.Customer || "").trim().toLowerCase();
+const selectedBuyers = new Set(); // empty = all buyers
+const passesBuyerFilter = (item) => selectedBuyers.size === 0 || selectedBuyers.has(buyerKey(item));
+
+function renderBuyerFilters() {
+  const labels = new Map();
+  (sotCache || []).forEach((it) => {
+    const k = buyerKey(it);
+    if (!labels.has(k)) labels.set(k, String(it.costing?.Customer || "").trim() || "(no buyer)");
+  });
+  [...selectedBuyers].forEach((k) => { if (!labels.has(k)) selectedBuyers.delete(k); });
+  const buyers = [...labels.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  ["buyer-filter-match", "buyer-filter-search"].forEach((id) => {
+    const box = document.getElementById(id);
+    box.innerHTML = "";
+    if (buyers.length === 0) return;
+    const lab = document.createElement("span");
+    lab.className = "buyer-filter-label";
+    lab.textContent = selectedBuyers.size ? "Buyer:" : "Buyer (none selected = all):";
+    box.appendChild(lab);
+    buyers.forEach(([k, label]) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "buyer-chip" + (selectedBuyers.has(k) ? " on" : "");
+      chip.textContent = label;
+      chip.addEventListener("click", () => {
+        selectedBuyers.has(k) ? selectedBuyers.delete(k) : selectedBuyers.add(k);
+        renderBuyerFilters();
+        onFilterChange();
+      });
+      box.appendChild(chip);
+    });
+    if (selectedBuyers.size) {
+      const clear = document.createElement("button");
+      clear.type = "button"; clear.className = "buyer-clear"; clear.textContent = "Clear";
+      clear.addEventListener("click", () => { selectedBuyers.clear(); renderBuyerFilters(); onFilterChange(); });
+      box.appendChild(clear);
+    }
+  });
+}
+function onFilterChange() {
+  if (lastQueryVector) renderMatchResults();
+  runArticleSearch(); // also lists a buyer's articles when nothing is typed
+  updateSuggestions();
+}
+
+// ============================================================
 // Image match tab
 // ============================================================
 const dropzone = document.getElementById("dropzone");
@@ -209,6 +274,8 @@ dropzone.addEventListener("click", () => fileInput.click());
 dropzone.addEventListener("dragover", (e) => e.preventDefault());
 dropzone.addEventListener("drop", (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) handleMatchFile(e.dataTransfer.files[0]); });
 fileInput.addEventListener("change", () => { if (fileInput.files[0]) handleMatchFile(fileInput.files[0]); });
+
+let lastQueryVector = null;
 
 async function handleMatchFile(file) {
   const url = URL.createObjectURL(file);
@@ -221,44 +288,118 @@ async function handleMatchFile(file) {
   results.hidden = true; status.hidden = false; status.textContent = "Loading model + generating embedding…";
 
   try {
-    const queryVector = await embedImage(url);
-    status.textContent = "Comparing against saved constructions…";
-    const snap = await getDocs(query(collection(db, "sots"), where("isLatest", "==", true)));
-    const scored = [];
-    snap.forEach((d) => {
-      const data = d.data();
-      if (!data.embedding) return;
-      scored.push({ ...data, id: d.id, score: cosineSimilarity(queryVector, data.embedding) });
-    });
-    scored.sort((a, b) => b.score - a.score);
-    status.hidden = true;
-    renderResults(results, scored.slice(0, 6), true);
-    if (scored.length === 0) {
-      status.hidden = false;
-      status.textContent = "No SOT entries in the database yet — add or import some first.";
-    }
+    lastQueryVector = await embedImage(url);
+    await renderMatchResults();
   } catch (err) {
     status.textContent = "Something went wrong: " + err.message;
   }
 }
 
-// ============================================================
-// Article search tab (latest version only; history is inside the modal)
-// ============================================================
-document.getElementById("article-search-btn").addEventListener("click", runArticleSearch);
-document.getElementById("article-input").addEventListener("keydown", (e) => { if (e.key === "Enter") runArticleSearch(); });
+// Compares the uploaded photo against saved SOTs (only the selected buyers, or all).
+async function renderMatchResults() {
+  const status = document.getElementById("match-status");
+  const results = document.getElementById("match-results");
+  status.hidden = false; status.textContent = "Comparing against saved constructions…";
+  const all = await getAllLatestSots();
+  const scored = all
+    .filter((d) => d.embedding && d.photoUrl && passesBuyerFilter(d))
+    .map((d) => ({ ...d, score: cosineSimilarity(lastQueryVector, d.embedding) }))
+    .sort((a, b) => b.score - a.score);
+  if (scored.length === 0) {
+    results.hidden = true;
+    status.textContent = all.length === 0
+      ? "No SOT entries in the database yet — add or import some first."
+      : "No SOT with a photo for the selected buyer(s).";
+    return;
+  }
+  status.hidden = true;
+  renderResults(results, scored.slice(0, 6), true);
+}
 
-async function runArticleSearch() {
-  const value = document.getElementById("article-input").value.trim();
+// ============================================================
+// Article search tab — suggestions as you type + buyer filter
+// ============================================================
+let suggestItems = [], suggestActive = -1;
+const articleInput = document.getElementById("article-input");
+const suggestBox = document.getElementById("suggest-box");
+
+document.getElementById("article-search-btn").addEventListener("click", () => { hideSuggestions(); runArticleSearch(); });
+articleInput.addEventListener("focus", () => { getAllLatestSots().then(updateSuggestions).catch(() => {}); });
+articleInput.addEventListener("input", updateSuggestions);
+articleInput.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" && suggestItems.length) { e.preventDefault(); setActive(Math.min(suggestActive + 1, suggestItems.length - 1)); }
+  else if (e.key === "ArrowUp" && suggestItems.length) { e.preventDefault(); setActive(Math.max(suggestActive - 1, 0)); }
+  else if (e.key === "Escape") hideSuggestions();
+  else if (e.key === "Enter") {
+    e.preventDefault();
+    if (suggestActive >= 0 && suggestItems[suggestActive]) pickSuggestion(suggestItems[suggestActive]);
+    else { hideSuggestions(); runArticleSearch(); }
+  }
+});
+document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) hideSuggestions(); });
+
+function hideSuggestions() { suggestBox.hidden = true; suggestItems = []; suggestActive = -1; }
+function setActive(i) {
+  suggestActive = i;
+  [...suggestBox.children].forEach((el, idx) => el.classList.toggle("active", idx === i));
+  suggestBox.children[i]?.scrollIntoView({ block: "nearest" });
+}
+function pickSuggestion(item) {
+  articleInput.value = item.article;
+  hideSuggestions();
+  runArticleSearch({ exact: true });
+}
+function updateSuggestions() {
+  const text = articleInput.value.trim().toLowerCase();
+  if (!text || !sotCache) { hideSuggestions(); return; }
+  const starts = (it) => String(it.article).toLowerCase().startsWith(text);
+  suggestItems = sotCache
+    .filter((it) => passesBuyerFilter(it) && String(it.article).toLowerCase().includes(text))
+    .sort((a, b) => (starts(b) - starts(a)) || String(a.article).localeCompare(String(b.article)))
+    .slice(0, 8);
+  suggestActive = -1;
+  if (suggestItems.length === 0) {
+    suggestBox.innerHTML = `<div class="suggest-item"><span class="s-sub">No article contains “${esc(articleInput.value.trim())}”</span></div>`;
+    suggestBox.hidden = false;
+    return;
+  }
+  suggestBox.innerHTML = "";
+  suggestItems.forEach((it) => {
+    const i = String(it.article).toLowerCase().indexOf(text);
+    const art = String(it.article);
+    const marked = `${esc(art.slice(0, i))}<mark>${esc(art.slice(i, i + text.length))}</mark>${esc(art.slice(i + text.length))}`;
+    const sub = [it.costing?.Customer, it.construction?.Construction].filter(Boolean).join(" · ");
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "suggest-item";
+    btn.innerHTML = `${it.photoUrl ? `<img src="${esc(it.photoUrl)}" alt="" />` : ""}<span><span class="s-art">${marked}</span><br><span class="s-sub">${esc(sub) || "—"}</span></span>`;
+    btn.addEventListener("click", () => pickSuggestion(it));
+    suggestBox.appendChild(btn);
+  });
+  suggestBox.hidden = false;
+}
+
+async function runArticleSearch({ exact = false } = {}) {
+  const text = articleInput.value.trim().toLowerCase();
   const resultsBox = document.getElementById("search-results");
   const emptyBox = document.getElementById("search-empty");
-  if (!value) return;
-  const q = query(collection(db, "sots"), where("article", "==", value), where("isLatest", "==", true));
-  const snap = await getDocs(q);
-  const items = [];
-  snap.forEach((d) => items.push({ ...d.data(), id: d.id }));
-  if (items.length === 0) { resultsBox.hidden = true; emptyBox.hidden = false; }
-  else { emptyBox.hidden = true; renderResults(resultsBox, items, false); }
+  const all = await getAllLatestSots();
+  // nothing typed and no buyer selected → nothing to search for
+  if (!text && selectedBuyers.size === 0) { resultsBox.hidden = true; emptyBox.hidden = true; return; }
+  let items = all.filter(passesBuyerFilter);
+  if (text) {
+    items = items.filter((it) => {
+      const a = String(it.article).trim().toLowerCase();
+      return exact ? a === text : a.includes(text);
+    });
+  }
+  items.sort((a, b) => String(a.article).localeCompare(String(b.article)));
+  if (items.length === 0) {
+    resultsBox.hidden = true; emptyBox.hidden = false;
+    emptyBox.textContent = selectedBuyers.size ? "No SOT found for the selected buyer(s)." : "No SOT found.";
+  } else {
+    emptyBox.hidden = true;
+    renderResults(resultsBox, items.slice(0, 60), false);
+  }
 }
 
 // ============================================================
@@ -373,6 +514,7 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
         update.embedding = await embedImage(update.photoUrl);
       }
       await updateDoc(doc(db, "sots", editingId), update);
+      invalidateSotCache();
       statusBox.textContent = "Entry updated.";
       exitEditMode();
     } else {
