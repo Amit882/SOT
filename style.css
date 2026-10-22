@@ -151,3 +151,9 @@ body { margin:0; font-family:var(--font-sans); background:var(--bg); color:var(-
 .score-strong { background:#DDEBDD !important; color:#2F5D2F !important; }
 .score-possible { background:#F3E8CC !important; color:#7A5A12 !important; }
 .score-weak { background:#EFE4E0 !important; color:#8A4A3A !important; }
+
+.ai-line { font-size:12px; line-height:1.4; margin:8px 0 0; padding:6px 8px; border-radius:6px; background:var(--bg); color:var(--ink-muted); }
+.ai-line strong { color:var(--ink); }
+.ai-same { border-left:3px solid #2F5D2F; }
+.ai-similar { border-left:3px solid #C79A2B; }
+.ai-different { border-left:3px solid #B5573F; }
