@@ -163,3 +163,9 @@ body { margin:0; font-family:var(--font-sans); background:var(--bg); color:var(-
 html { overflow-y:auto; -webkit-overflow-scrolling:touch; }
 .app-shell { min-height:100vh; min-height:100dvh; }
 .main { padding-bottom:140px; }
+
+.match-actions { margin-top:20px; padding:14px 16px; border:1px dashed var(--border); border-radius:var(--radius); background:var(--surface); font-size:14px; }
+.match-actions p { margin:0 0 10px; color:var(--ink-muted); }
+.photo-bar { display:flex; align-items:center; gap:12px; margin:0 0 18px; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); }
+.photo-bar img { width:64px; height:48px; object-fit:cover; border-radius:4px; }
+.photo-bar label { font-size:14px; cursor:pointer; }
