@@ -157,3 +157,9 @@ body { margin:0; font-family:var(--font-sans); background:var(--bg); color:var(-
 .ai-same { border-left:3px solid #2F5D2F; }
 .ai-similar { border-left:3px solid #C79A2B; }
 .ai-different { border-left:3px solid #B5573F; }
+
+/* Scrolling safety: always allow the page to scroll, and leave room at the bottom
+   so the last cards are not hidden behind a phone's navigation bar. */
+html { overflow-y:auto; -webkit-overflow-scrolling:touch; }
+.app-shell { min-height:100vh; min-height:100dvh; }
+.main { padding-bottom:140px; }
