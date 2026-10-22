@@ -75,6 +75,10 @@
       </div>
       <div id="match-status" class="status-line" hidden></div>
       <div id="match-results" class="result-grid" hidden></div>
+      <div id="match-actions" class="match-actions" hidden>
+        <p><strong>What next?</strong> Click a card above to open it — then choose <em>Update this entry</em> (fix the existing card) or <em>Save as new version</em> (keeps the old card as history). Nothing matches?</p>
+        <button type="button" id="match-new-btn" class="btn btn-primary">Add as a new entry</button>
+      </div>
     </section>
 
     <!-- Article search -->
@@ -95,6 +99,11 @@
     <!-- Add SOT -->
     <section id="tab-upload" class="tab">
       <header class="tab-head"><h1>Add a new SOT entry</h1><p>Fill in every section — this becomes the full card.</p></header>
+      <div id="add-mode-banner" class="notice-box" style="display:none;"></div>
+      <div id="match-photo-bar" class="photo-bar" hidden>
+        <img id="match-photo-thumb" alt="" />
+        <label><input type="checkbox" id="use-match-photo" /> <span id="match-photo-label">Use the photo I uploaded for matching</span></label>
+      </div>
       <form id="form-add-sot">
         <div id="duplicate-notice" class="notice-box" style="display:none;"></div>
 
@@ -206,7 +215,7 @@
         <h2 id="modal-name"></h2>
         <span id="modal-version" class="version-tag" style="display:none;"></span>
       </div>
-      <button class="btn-small" id="modal-edit-btn" style="margin-left:auto; align-self:flex-start;">Edit</button>
+      <span style="margin-left:auto; align-self:flex-start; display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;"><button class="btn-small" id="modal-edit-btn">Update this entry</button><button class="btn-small" id="modal-newversion-btn">Save as new version</button></span>
       <button class="modal-close" id="modal-close">✕</button>
     </div>
     <div class="modal-body">
