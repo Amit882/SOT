@@ -163,7 +163,7 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById(btn.dataset.tab).classList.add("active");
-    if (btn.dataset.tab === "tab-upload" && editingId) {
+    if (btn.dataset.tab === "tab-upload" && (editingId || matchFlow || document.getElementById("add-mode-banner").style.display === "block")) {
       exitEditMode();
       document.getElementById("form-add-sot").reset();
       resetSotTable();
@@ -209,6 +209,7 @@ async function saveSotWithVersioning(sotData) {
   return isNewVersion;
 }
 
+let matchFlow = false; // true when the opened card came from an image-match search
 function renderResults(container, items, showScore) {
   container.innerHTML = "";
   if (items.length === 0) { container.hidden = true; return; }
@@ -224,7 +225,7 @@ function renderResults(container, items, showScore) {
         ${item.ai ? `<p class="ai-line ai-${esc(item.ai.verdict)}"><strong>AI: ${esc(item.ai.verdict)}${item.ai.score != null ? ` · ${Math.round(item.ai.score)}/100` : ""}</strong><br>${esc(item.ai.reason)}</p>` : ""}
         ${showScore ? `<span class="result-score score-${matchBand(item.score).cls}">${Math.round(Math.max(0, item.score) * 100)}% · ${matchBand(item.score).label}</span>` : ""}
       </div>`;
-    card.addEventListener("click", () => openModal(item));
+    card.addEventListener("click", () => { matchFlow = !!showScore; openModal(item); });
     container.appendChild(card);
   });
   container.hidden = false;
@@ -315,6 +316,7 @@ async function handleMatchFile(file) {
   const status = document.getElementById("match-status");
   const results = document.getElementById("match-results");
   results.hidden = true; status.hidden = false; status.textContent = "Loading model + generating embedding…";
+  document.getElementById("match-actions").hidden = true;
 
   try {
     lastQueryFile = file; aiCache = new Map();
@@ -336,6 +338,7 @@ async function renderMatchResults() {
     .map((d) => ({ ...d, score: cosineSimilarity(lastQueryVector, d.embedding) }))
     .sort((a, b) => b.score - a.score);
   if (scored.length === 0) {
+    document.getElementById("match-actions").hidden = !canUpload(currentProfile.role);
     results.hidden = true;
     status.textContent = all.length === 0
       ? "No SOT entries in the database yet — add or import some first."
@@ -344,6 +347,7 @@ async function renderMatchResults() {
   }
   const top = scored.slice(0, 6);
   renderResults(results, top, true);
+  document.getElementById("match-actions").hidden = !canUpload(currentProfile.role);
   status.hidden = true;
   const note = (msg) => { status.hidden = false; status.textContent = msg; };
 
@@ -651,17 +655,15 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
     dupNotice.style.display = "none";
     e.target.reset();
     resetSotTable();
+    exitEditMode();
   } catch (err) {
     statusBox.textContent = "Failed: " + err.message;
   }
 });
 
-// Fills the Add-SOT form with an existing entry's data and switches
-// the form into "edit this exact document" mode (no versioning).
-function enterEditMode(item) {
-  editingId = item.id;
+// ---- Add-form modes: update in place / new version / brand-new entry ----
+function fillAddForm(item) {
   document.getElementById("add-article").value = item.article || "";
-  document.getElementById("add-photo").required = false; // keep existing photo unless a new one is chosen
   document.getElementById("add-construction").value = item.construction?.Construction || "";
   document.getElementById("add-outsole").value = item.construction?.Outsole || "";
   document.getElementById("add-upper").value = item.construction?.["Upper Material"] || "";
@@ -697,18 +699,96 @@ function enterEditMode(item) {
   });
   updateSotTotal();
 
-  document.getElementById("form-add-sot").querySelector('button[type="submit"]').textContent = "Update entry";
+}
+
+function showAddTab() {
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
   document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
   document.querySelector('[data-tab="tab-upload"]').classList.add("active");
   document.getElementById("tab-upload").classList.add("active");
   backdrop.hidden = true;
+  window.scrollTo({ top: 0 });
 }
+
+function setBanner(text) {
+  const b = document.getElementById("add-mode-banner");
+  b.textContent = text || "";
+  b.style.display = text ? "block" : "none";
+}
+
+// Photo from the image-match search can be reused as this entry's photo.
+function setMatchPhoto(on) {
+  const input = document.getElementById("add-photo");
+  if (on && lastQueryFile) {
+    const dt = new DataTransfer();
+    dt.items.add(new File([lastQueryFile], lastQueryFile.name || "match.jpg", { type: lastQueryFile.type || "image/jpeg" }));
+    input.files = dt.files;
+  } else {
+    input.value = "";
+  }
+}
+function setupMatchPhotoBar(defaultOn, label) {
+  const bar = document.getElementById("match-photo-bar");
+  if (!matchFlow || !lastQueryFile) { bar.hidden = true; return; }
+  document.getElementById("match-photo-thumb").src = URL.createObjectURL(lastQueryFile);
+  document.getElementById("match-photo-label").textContent = label;
+  const cb = document.getElementById("use-match-photo");
+  cb.checked = defaultOn;
+  cb.onchange = () => setMatchPhoto(cb.checked);
+  bar.hidden = false;
+  setMatchPhoto(defaultOn);
+}
+
+function setSubmitLabel(t) { document.getElementById("form-add-sot").querySelector('button[type="submit"]').textContent = t; }
+
+// 1) Edit this exact document (no versioning)
+function enterEditMode(item) {
+  editingId = item.id;
+  fillAddForm(item);
+  document.getElementById("add-photo").required = false; // keep existing photo unless a new one is chosen
+  setSubmitLabel("Update entry");
+  setBanner(`Updating the existing entry ${item.article} (changes overwrite it). Check every field, change what is wrong, then press Update entry.`);
+  dupNotice.style.display = "none";
+  setupMatchPhotoBar(false, "Replace this entry's photo with the one I uploaded for matching");
+  showAddTab();
+}
+
+// 2) Same article, new dated card — old one stays as history
+function enterNewVersionMode(item) {
+  editingId = null;
+  document.getElementById("form-add-sot").reset();
+  fillAddForm(item);
+  document.getElementById("add-photo").required = true;
+  setSubmitLabel("Save as new version");
+  setBanner(`New version of ${item.article}. The old card is kept as history. Check every field, change what is different, then press Save as new version.`);
+  dupNotice.style.display = "none";
+  setupMatchPhotoBar(true, "Use the photo I uploaded for matching as this version's photo");
+  if (!matchFlow || !lastQueryFile) document.getElementById("match-photo-bar").hidden = true;
+  showAddTab();
+}
+
+// 3) Nothing matched — brand-new entry, uploaded photo pre-attached
+function enterNewEntryMode() {
+  editingId = null;
+  matchFlow = true;
+  document.getElementById("form-add-sot").reset();
+  resetSotTable();
+  document.getElementById("add-photo").required = true;
+  setSubmitLabel("Save entry");
+  setBanner("New entry. Fill in the details — your uploaded photo is already attached.");
+  dupNotice.style.display = "none";
+  setupMatchPhotoBar(true, "Use the photo I uploaded for matching");
+  showAddTab();
+}
+document.getElementById("match-new-btn").addEventListener("click", enterNewEntryMode);
 
 function exitEditMode() {
   editingId = null;
+  matchFlow = false;
   document.getElementById("add-photo").required = true;
-  document.getElementById("form-add-sot").querySelector('button[type="submit"]').textContent = "Save entry";
+  setSubmitLabel("Save entry");
+  setBanner("");
+  document.getElementById("match-photo-bar").hidden = true;
 }
 
 // ============================================================
@@ -739,6 +819,9 @@ async function openModal(item) {
   const editBtn = document.getElementById("modal-edit-btn");
   editBtn.style.display = canUpload(currentProfile.role) ? "inline-block" : "none";
   editBtn.onclick = () => enterEditMode(item);
+  const newVerBtn = document.getElementById("modal-newversion-btn");
+  newVerBtn.style.display = canUpload(currentProfile.role) ? "inline-block" : "none";
+  newVerBtn.onclick = () => enterNewVersionMode(item);
 
   kvGrid(document.getElementById("modal-construction"), item.construction);
   kvGrid(document.getElementById("modal-costing"), item.costing);
