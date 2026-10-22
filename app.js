@@ -402,15 +402,27 @@ async function verifyWithGemini(candidates) {
     parts.push({ inline_data: { mime_type: "image/jpeg", data: await candidateJpeg(c.photoUrl) } });
   }
 
-  const model = geminiCfg.geminiModel || "gemini-3.1-flash-lite";
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiCfg.geminiApiKey },
-    body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { temperature: 0, responseMimeType: "application/json" } }),
-  });
-  if (res.status === 429) throw new Error("today's free AI limit is used up");
-  if (res.status === 400 || res.status === 403) throw new Error("API key problem (" + res.status + ")");
-  if (!res.ok) throw new Error("AI service error " + res.status);
+  // Try the configured model first, then other free Flash/Flash-Lite models if it is
+  // overloaded (503/500), rate-limited (429) or not found (404). Retry once per model.
+  const models = [...new Set([geminiCfg.geminiModel, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash"].filter(Boolean))];
+  const payload = JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { temperature: 0, responseMimeType: "application/json" } });
+  let res = null, lastMsg = "";
+  outer: for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": geminiCfg.geminiApiKey },
+        body: payload,
+      });
+      if (res.ok) break outer;
+      const errBody = await res.clone().json().catch(() => null);
+      lastMsg = `${res.status}${errBody?.error?.message ? ": " + String(errBody.error.message).slice(0, 140) : ""}`;
+      if (res.status === 400 || res.status === 401 || res.status === 403) throw new Error("API key problem (" + lastMsg + ")");
+      if (res.status === 500 || res.status === 503) { await new Promise((r) => setTimeout(r, 1500)); continue; } // retry same model
+      break; // 404 / 429 / other → next model
+    }
+  }
+  if (!res || !res.ok) throw new Error(res && res.status === 429 ? "today's free AI limit is used up" : "Google AI is busy, error " + lastMsg);
   const data = await res.json();
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
   const json = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
