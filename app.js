@@ -26,6 +26,20 @@ const BUSINESS_SOT_OPERATIONS = [
   "Sole Stitch/Preparation", "Cemented/DIP", "Packing",
 ];
 
+// Optional Gemini "AI check". The API key is NOT in this public code: it lives in the Firestore
+// document config/gemini ({ apiKey, model }) which only approved, signed-in users can read.
+// Without that document the app simply works with visual similarity only.
+let geminiCfg = null;
+const geminiReady = () => !!(geminiCfg && geminiCfg.geminiApiKey);
+async function loadGeminiConfig() {
+  try {
+    const snap = await getDoc(doc(db, "config", "gemini"));
+    if (snap.exists() && snap.data().apiKey) {
+      geminiCfg = { geminiApiKey: String(snap.data().apiKey).trim(), geminiModel: snap.data().model || "gemini-3.1-flash-lite" };
+    }
+  } catch (_) { /* no config / no access — AI check stays off */ }
+}
+
 let embedder = null;
 async function getEmbedder() {
   if (!embedder) embedder = await pipeline("image-feature-extraction", "Xenova/clip-vit-base-patch32");
@@ -130,6 +144,7 @@ onAuthStateChanged(auth, async (user) => {
   if (!currentProfile || !currentProfile.approved) { showScreen("pending"); return; }
   showScreen("app");
   getAllLatestSots().catch(() => {});
+  loadGeminiConfig();
   applyRoleToUI(currentProfile.role);
   document.getElementById("user-name").textContent = currentProfile.name || user.email;
   document.getElementById("user-role").textContent = currentProfile.role.replace("_", " ");
@@ -206,6 +221,7 @@ function renderResults(container, items, showScore) {
         <span class="result-article">${item.article || "—"}</span>
         <p class="result-name">${item.construction?.Construction || "Untitled"}</p>
         <p class="result-material">${item.construction?.Outsole || ""}</p>
+        ${item.ai ? `<p class="ai-line ai-${esc(item.ai.verdict)}"><strong>AI: ${esc(item.ai.verdict)}${item.ai.score != null ? ` · ${Math.round(item.ai.score)}/100` : ""}</strong><br>${esc(item.ai.reason)}</p>` : ""}
         ${showScore ? `<span class="result-score score-${matchBand(item.score).cls}">${Math.round(Math.max(0, item.score) * 100)}% · ${matchBand(item.score).label}</span>` : ""}
       </div>`;
     card.addEventListener("click", () => openModal(item));
@@ -288,6 +304,7 @@ dropzone.addEventListener("drop", (e) => { e.preventDefault(); if (e.dataTransfe
 fileInput.addEventListener("change", () => { if (fileInput.files[0]) handleMatchFile(fileInput.files[0]); });
 
 let lastQueryVector = null;
+let lastQueryFile = null;
 
 async function handleMatchFile(file) {
   const url = URL.createObjectURL(file);
@@ -300,6 +317,7 @@ async function handleMatchFile(file) {
   results.hidden = true; status.hidden = false; status.textContent = "Loading model + generating embedding…";
 
   try {
+    lastQueryFile = file; aiCache = new Map();
     lastQueryVector = await embedImage(url);
     await renderMatchResults();
   } catch (err) {
@@ -326,10 +344,84 @@ async function renderMatchResults() {
   }
   const top = scored.slice(0, 6);
   renderResults(results, top, true);
-  if (top[0].score < 0.75) {
-    status.hidden = false;
-    status.textContent = "No close match — this looks like a new construction. If it really is new, add it with “Add SOT”.";
-  } else status.hidden = true;
+  status.hidden = true;
+  const note = (msg) => { status.hidden = false; status.textContent = msg; };
+
+  if (geminiReady() && lastQueryFile) {
+    note("AI is checking the top matches…");
+    try {
+      const aiTop = await verifyWithGemini(top.slice(0, 4));
+      const reordered = [...aiTop.sort((a, b) => (b.ai?.score ?? -1) - (a.ai?.score ?? -1)), ...top.slice(4)];
+      renderResults(results, reordered, true);
+      const best = reordered[0]?.ai;
+      if (best && best.score < 50) note("AI sees no close match — this looks like a new construction. If it really is new, add it with “Add SOT”.");
+      else status.hidden = true;
+      return;
+    } catch (err) {
+      note("AI check unavailable (" + err.message + ") — showing visual similarity only.");
+      if (top[0].score < 0.75) status.textContent += " No close visual match either; this may be a new construction.";
+      return;
+    }
+  }
+  if (top[0].score < 0.75) note("No close match — this looks like a new construction. If it really is new, add it with “Add SOT”.");
+}
+
+// ---- Gemini AI check -------------------------------------------------
+let aiCache = new Map(); // cache per uploaded photo so changing the buyer filter doesn't re-ask
+async function toJpegBase64(blob, maxSide = 768) {
+  const bmp = await createImageBitmap(blob);
+  const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bmp.width * k); canvas.height = Math.round(bmp.height * k);
+  canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+}
+async function candidateJpeg(url) {
+  const small = url.replace("/upload/", "/upload/w_768,c_limit,q_auto,f_jpg/");
+  const res = await fetch(small);
+  if (!res.ok) throw new Error("could not load a saved photo");
+  return toJpegBase64(await res.blob());
+}
+async function verifyWithGemini(candidates) {
+  const cacheKey = candidates.map((c) => c.id).join(",");
+  if (aiCache.has(cacheKey)) return candidates.map((c) => ({ ...c, ai: aiCache.get(cacheKey)[c.id] }));
+
+  const letters = "ABCDEFGH";
+  const parts = [{
+    text:
+      "You are a footwear construction expert helping a shoe factory. Image 1 is the shoe (a photo or a technical drawing) that the user wants to identify. " +
+      "The next images are candidate records from the factory database, labelled A, B, C… with their saved details. " +
+      "For each candidate decide if it has the SAME shoe construction/style as Image 1 (shape, upper style, sole unit, closure, cut height, " +
+      "how the sole is attached). Ignore colour and whether it is a photo or a drawing. " +
+      'Return ONLY JSON: {"results":[{"id":"A","verdict":"same"|"similar"|"different","score":0-100,"reason":"one short sentence"}]}',
+  }];
+  parts.push({ inline_data: { mime_type: "image/jpeg", data: await toJpegBase64(lastQueryFile) } });
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    parts.push({ text: `Candidate ${letters[i]} — article ${c.article}; construction: ${c.construction?.Construction || "?"}; outsole: ${c.construction?.Outsole || "?"}; buyer: ${c.costing?.Customer || "?"}` });
+    parts.push({ inline_data: { mime_type: "image/jpeg", data: await candidateJpeg(c.photoUrl) } });
+  }
+
+  const model = geminiCfg.geminiModel || "gemini-3.1-flash-lite";
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiCfg.geminiApiKey },
+    body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { temperature: 0, responseMimeType: "application/json" } }),
+  });
+  if (res.status === 429) throw new Error("today's free AI limit is used up");
+  if (res.status === 400 || res.status === 403) throw new Error("API key problem (" + res.status + ")");
+  if (!res.ok) throw new Error("AI service error " + res.status);
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+  const json = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+  const byId = {};
+  (json.results || []).forEach((r, i) => {
+    const idx = letters.indexOf(String(r.id || letters[i]).trim().toUpperCase());
+    const cand = candidates[idx];
+    if (cand) byId[cand.id] = { verdict: ["same", "similar", "different"].includes(r.verdict) ? r.verdict : "similar", score: Number(r.score), reason: String(r.reason || "") };
+  });
+  aiCache.set(cacheKey, byId);
+  return candidates.map((c) => ({ ...c, ai: byId[c.id] }));
 }
 
 // ============================================================
