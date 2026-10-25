@@ -6,7 +6,7 @@
 <title>SOT Match — Construction lookup</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=3" />
+<link rel="stylesheet" href="style.css?v=4" />
 </head>
 <body>
 
@@ -179,12 +179,13 @@
 
     <!-- Excel import -->
     <section id="tab-import" class="tab">
-      <header class="tab-head"><h1>Import from Excel</h1><p>Upload a costing workbook in the standard layout (article cards with photos). Each article is detected automatically.</p></header>
+      <header class="tab-head"><h1>Import from Excel</h1><p>Upload a costing workbook. Two layouts are recognised automatically: article-card sheets (9, 8, 7…) and the one-row-per-article “SOT Master Summary” table. Photos are taken from the file too.</p></header>
       <label class="field field-wide" style="max-width:420px;">
         <span>Excel file (.xlsx)</span>
         <input type="file" id="import-file" accept=".xlsx" />
       </label>
       <div id="import-status" class="status-line" hidden></div>
+      <div id="import-review" class="review-box" hidden></div>
       <div id="import-preview"></div>
       <button id="import-confirm-btn" class="btn btn-primary" style="margin-top:16px; display:none;">Confirm import</button>
     </section>
@@ -235,6 +236,10 @@
         <p class="section-label">Efficiency &amp; output metrics</p>
         <div class="kv-grid" id="modal-efficiency"></div>
       </div>
+      <div class="section-block" id="modal-extra-block" style="display:none;">
+        <p class="section-label">Other details</p>
+        <div class="kv-grid" id="modal-extra"></div>
+      </div>
       <div class="section-block" id="modal-notes-block">
         <p class="section-label">Notes</p>
         <div class="kv-grid" id="modal-notes"></div>
@@ -249,6 +254,6 @@
 
 <script type="module" src="firebase-config.js"></script>
 <script type="module" src="cloudinary-config.js"></script>
-<script type="module" src="app.js?v=3"></script>
+<script type="module" src="app.js?v=4"></script>
 </body>
 </html>
