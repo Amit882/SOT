@@ -62,10 +62,20 @@ function cosineSimilarity(a, b) {
 
 // How to read a score: CLIP photo-vs-photo scores of unrelated shoes still sit around 50-65%,
 // so only the higher bands mean "looks alike". Adjust these cut-offs if needed.
+// Raw CLIP cosine of two shoe photos is ~0.60-0.75 even when they are different shoes,
+// so we stretch 0.60..0.95 onto 0..100% before showing it.
+function matchPct(cos) { return Math.round(Math.min(1, Math.max(0, (cos - 0.60) / 0.35)) * 100); }
 function matchBand(score) {
-  if (score >= 0.85) return { cls: "strong", label: "Strong match" };
-  if (score >= 0.75) return { cls: "possible", label: "Possible match" };
+  const p = matchPct(score);
+  if (p >= 75) return { cls: "strong", label: "Strong match" };
+  if (p >= 50) return { cls: "possible", label: "Possible match" };
   return { cls: "weak", label: "Weak match" };
+}
+// When the AI has judged a candidate, its verdict replaces the visual score.
+function aiBadge(ai) {
+  if (ai.verdict === "same") return { cls: "strong", label: "AI: same construction" };
+  if (ai.verdict === "similar") return { cls: "possible", label: "AI: similar" };
+  return { cls: "weak", label: "AI: different shoe" };
 }
 
 // ============================================================
@@ -217,13 +227,15 @@ function renderResults(container, items, showScore) {
     const card = document.createElement("div");
     card.className = "result-card";
     card.innerHTML = `
-      <img src="${item.photoUrl || ""}" alt="${item.construction?.Construction || ""}" />
+      <img src="${item.photoUrl || ""}" alt="${esc(item.construction?.Construction || "")}" />
       <div class="result-card-body">
         <span class="result-article">${item.article || "—"}</span>
-        <p class="result-name">${item.construction?.Construction || "Untitled"}</p>
-        <p class="result-material">${item.construction?.Outsole || ""}</p>
+        <p class="result-name">${esc(item.construction?.Construction || item.costing?.["Types of Shoe"] || "Untitled")}</p>
+        <p class="result-material">${esc(item.construction?.Outsole || [item.costing?.Customer, item.costing?.Brand].filter(Boolean).join(" · "))}</p>
         ${item.ai ? `<p class="ai-line ai-${esc(item.ai.verdict)}"><strong>AI: ${esc(item.ai.verdict)}${item.ai.score != null ? ` · ${Math.round(item.ai.score)}/100` : ""}</strong><br>${esc(item.ai.reason)}</p>` : ""}
-        ${showScore ? `<span class="result-score score-${matchBand(item.score).cls}">${Math.round(Math.max(0, item.score) * 100)}% · ${matchBand(item.score).label}</span>` : ""}
+        ${showScore ? (item.ai
+          ? `<span class="result-score score-${aiBadge(item.ai).cls}">${aiBadge(item.ai).label}</span>`
+          : `<span class="result-score score-${matchBand(item.score).cls}">Visual ${matchPct(item.score)}% · ${matchBand(item.score).label}</span>`) : ""}
       </div>`;
     card.addEventListener("click", () => { matchFlow = !!showScore; openModal(item); });
     container.appendChild(card);
@@ -345,7 +357,7 @@ async function renderMatchResults() {
       : "No SOT with a photo for the selected buyer(s).";
     return;
   }
-  const top = scored.slice(0, 6);
+  const top = scored.slice(0, 8);
   renderResults(results, top, true);
   document.getElementById("match-actions").hidden = !canUpload(currentProfile.role);
   status.hidden = true;
@@ -354,20 +366,23 @@ async function renderMatchResults() {
   if (geminiReady() && lastQueryFile) {
     note("AI is checking the top matches…");
     try {
-      const aiTop = await verifyWithGemini(top.slice(0, 4));
-      const reordered = [...aiTop.sort((a, b) => (b.ai?.score ?? -1) - (a.ai?.score ?? -1)), ...top.slice(4)];
-      renderResults(results, reordered, true);
-      const best = reordered[0]?.ai;
-      if (best && best.score < 50) note("AI sees no close match — this looks like a new construction. If it really is new, add it with “Add SOT”.");
-      else status.hidden = true;
+      const aiTop = await verifyWithGemini(top);
+      // AI is the judge: sort by AI score (visual score only breaks ties); hide the clearly different ones.
+      const ranked = aiTop.sort((a, b) => ((b.ai?.score ?? -1) - (a.ai?.score ?? -1)) || (b.score - a.score));
+      const good = ranked.filter((x) => x.ai && x.ai.verdict !== "different");
+      if (good.length) { renderResults(results, good, true); status.hidden = true; }
+      else {
+        renderResults(results, ranked.slice(0, 3), true);
+        note("AI found no matching construction in the database — this looks like a NEW construction. If it really is new, add it with “Add SOT”. (Cards below are only the closest looks, not matches.)");
+      }
       return;
     } catch (err) {
       note("AI check unavailable (" + err.message + ") — showing visual similarity only.");
-      if (top[0].score < 0.75) status.textContent += " No close visual match either; this may be a new construction.";
+      if (matchPct(top[0].score) < 50) status.textContent += " No close visual match either; this may be a new construction.";
       return;
     }
   }
-  if (top[0].score < 0.75) note("No close match — this looks like a new construction. If it really is new, add it with “Add SOT”.");
+  if (matchPct(top[0].score) < 50) note("No close match — this looks like a new construction. If it really is new, add it with “Add SOT”.");
 }
 
 // ---- Gemini AI check -------------------------------------------------
@@ -616,6 +631,7 @@ function collectAddForm() {
   };
 }
 
+let baseItem = null; // the entry being edited / versioned, so fields the form has no box for are not lost
 let editingId = null; // set when the Add form is being used to edit an existing doc, instead of creating one
 
 document.getElementById("form-add-sot").addEventListener("submit", async (e) => {
@@ -626,6 +642,7 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
 
   try {
     const formData = collectAddForm();
+    if (baseItem) ["construction", "costing", "efficiency", "notes", "extra"].forEach((k) => { formData[k] = { ...(baseItem[k] || {}), ...formData[k] }; });
 
     if (editingId) {
       // Editing in place: only touch the photo/embedding if a new photo was chosen.
@@ -743,7 +760,7 @@ function setSubmitLabel(t) { document.getElementById("form-add-sot").querySelect
 
 // 1) Edit this exact document (no versioning)
 function enterEditMode(item) {
-  editingId = item.id;
+  editingId = item.id; baseItem = item;
   fillAddForm(item);
   document.getElementById("add-photo").required = false; // keep existing photo unless a new one is chosen
   setSubmitLabel("Update entry");
@@ -755,7 +772,7 @@ function enterEditMode(item) {
 
 // 2) Same article, new dated card — old one stays as history
 function enterNewVersionMode(item) {
-  editingId = null;
+  editingId = null; baseItem = item;
   document.getElementById("form-add-sot").reset();
   fillAddForm(item);
   document.getElementById("add-photo").required = true;
@@ -769,7 +786,7 @@ function enterNewVersionMode(item) {
 
 // 3) Nothing matched — brand-new entry, uploaded photo pre-attached
 function enterNewEntryMode() {
-  editingId = null;
+  editingId = null; baseItem = null;
   matchFlow = true;
   document.getElementById("form-add-sot").reset();
   resetSotTable();
@@ -783,7 +800,7 @@ function enterNewEntryMode() {
 document.getElementById("match-new-btn").addEventListener("click", enterNewEntryMode);
 
 function exitEditMode() {
-  editingId = null;
+  editingId = null; baseItem = null;
   matchFlow = false;
   document.getElementById("add-photo").required = true;
   setSubmitLabel("Save entry");
@@ -812,7 +829,7 @@ function kvGrid(container, obj) {
 async function openModal(item) {
   document.getElementById("modal-img").src = item.photoUrl || "";
   document.getElementById("modal-article").textContent = item.article;
-  document.getElementById("modal-name").textContent = item.construction?.Construction || "Untitled";
+  document.getElementById("modal-name").textContent = item.construction?.Construction || item.costing?.["Types of Shoe"] || "Untitled";
   const vTag = document.getElementById("modal-version");
   vTag.style.display = "none";
 
@@ -835,6 +852,11 @@ async function openModal(item) {
   const hasNotes = item.notes && Object.values(item.notes).some((v) => v);
   notesBlock.style.display = hasNotes ? "block" : "none";
   if (hasNotes) kvGrid(document.getElementById("modal-notes"), item.notes);
+
+  const extraBlock = document.getElementById("modal-extra-block");
+  const hasExtra = item.extra && Object.values(item.extra).some((v) => v);
+  extraBlock.style.display = hasExtra ? "block" : "none";
+  if (hasExtra) kvGrid(document.getElementById("modal-extra"), item.extra);
 
   const table = document.getElementById("modal-sot-table");
   const rows = Object.entries(item.businessSOT || {});
@@ -935,61 +957,135 @@ function renderUserList(container, users, isPendingList) {
 // ---- PARSER START ----
 const normLabel = (s) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase().replace(/\s*\/\s*/g, "/");
 
-const TOP_LABELS = {
-  "customer": ["costing", "Customer"],
-  "ordered yet": ["costing", "Ordered Yet"],
-  "stage": ["costing", "Stage"],
-  "types of shoe": ["costing", "Types of Shoe"],
-  "version": ["costing", "Version"],
-  "received date": ["costing", "Received Date"],
-  "delivery date": ["costing", "Delivery Date"],
-  "size range": ["costing", "Size Range"],
-  "gender": ["costing", "Gender"],
-  "initial order qty": ["costing", "Order Qty"],
-  "order status": ["costing", "Order Status"],
-  "upper material": ["construction", "Upper Material"],
-  "safety toe": ["construction", "Safety Toe"],
-  "wp/nwp": ["construction", "WP/NWP"],
-  "cemented/dip": ["construction", "Cemented/DIP"],
-  "construction": ["construction", "Construction"],
-  "outsole": ["construction", "Outsole"],
+// ===== Label dictionary: many spellings → one canonical field =====
+const OP_ALIASES = {
+  "Lamination": ["lamination"], "Cutting": ["cutting"], "Crimping": ["crimping"], "Skiving": ["skiving"],
+  "UV-marking": ["uv marking", "uv-marking", "uvmarking"], "Embossed/Heat-seal": ["embossed", "emboss", "heat seal", "heat-seal", "embossed heat seal"],
+  "Seamless": ["seamless"], "Printing": ["printing", "print"], "Fusing": ["fusing"], "Loop Cutting": ["loop cutting"],
+  "Heat press": ["heat press", "heat pressing"], "Heat Cut": ["heat cut"], "Brush": ["brush", "brushing"],
+  "Edge color/Spray": ["edge color", "edge colour", "edge color spray", "edge colour/spray", "spray"], "Bootie": ["bootie", "bootie preparation"],
+  "Pattern Sewing": ["pattern sewing"], "Embroidery": ["embroidery"], "Stitching": ["stitching"], "UV Treatment": ["uv treatment"],
+  "Buffing": ["buffing"], "Stock Fitting": ["stock fitting", "stock fit", "stockfitting"], "Socks Preparation": ["socks preparation"],
+  "Footbed Preparation": ["footbed preparation", "footbed"], "Insole Preparation": ["insole preparation"],
+  "Sole Stitch/Preparation": ["sole stitch/preparation", "sole stitch", "sole preparation"],
+  "Cemented/DIP": ["cemented/dip", "dip", "cementing"], "Packing": ["packing"],
 };
-const DATE_KEYS = new Set(["Received Date", "Delivery Date"]);
-const OP_BY_NORM = Object.fromEntries(BUSINESS_SOT_OPERATIONS.map((op) => [normLabel(op), op]));
-// Some sheets use shorter/older labels for the same operation.
-OP_BY_NORM["edge color"] = "Edge color/Spray";
-OP_BY_NORM["sole stitch"] = "Sole Stitch/Preparation";
-OP_BY_NORM["sole preparation"] = "Sole Stitch/Preparation";
+const OPS = {};
+BUSINESS_SOT_OPERATIONS.forEach((op) => { OPS[normLabel(op)] = op; });
+Object.entries(OP_ALIASES).forEach(([op, list]) => list.forEach((l) => { OPS[normLabel(l)] = op; }));
+function resolveOp(label) {
+  const n = normLabel(label);
+  if (OPS[n]) return OPS[n];
+  if (n.startsWith("sole stitch")) return "Sole Stitch/Preparation"; // "only sole" / "with upper" are summed
+  return null;
+}
 
-// Efficiency rows are matched by what the label starts with.
+// info fields: label → [group, key]
+const FIELDS = {};
+const addField = (labels, group, key) => labels.forEach((l) => { FIELDS[normLabel(l)] = [group, key]; });
+addField(["customer", "buyer"], "costing", "Customer");
+addField(["brand"], "costing", "Brand");
+addField(["category", "types of shoe", "type of shoe"], "costing", "Types of Shoe");
+addField(["ordered yet"], "costing", "Ordered Yet");
+addField(["stage"], "costing", "Stage");
+addField(["version"], "costing", "Version");
+addField(["received date", "receive date", "date received"], "costing", "Received Date");
+addField(["delivery date"], "costing", "Delivery Date");
+addField(["size range", "size"], "costing", "Size Range");
+addField(["gender"], "costing", "Gender");
+addField(["initial order qty", "order qty", "qty", "order quantity"], "costing", "Order Qty");
+addField(["order status"], "costing", "Order Status");
+addField(["upper material", "upper"], "construction", "Upper Material");
+addField(["safety toe"], "construction", "Safety Toe");
+addField(["wp/nwp"], "construction", "WP/NWP");
+addField(["cemented/dip"], "construction", "Cemented/DIP");
+addField(["construction"], "construction", "Construction");
+addField(["outsole", "sole"], "construction", "Outsole");
+addField(["similar existing"], "extra", "Similar Existing");
+addField(["similar variation"], "extra", "Similar Variation");
+addField(["shoe type"], "extra", "Shoe Type");
+const DATE_KEYS = new Set(["Received Date", "Delivery Date"]);
+const NOTE_KEYS = {
+  "special note:": "Special Note", "special note": "Special Note", "tech. data": "Tech. Data", "tech data": "Tech. Data",
+  "physical sample": "Physical Sample", "sample autopsy": "Sample Autopsy", "recommendation": "Recommendation",
+};
+const IGNORE_LABELS = new Set(["picture", "pic", "image", "photo", "sl. no", "sl no", "sl.", "sl", "s/l.", "s/l", "sr", "sr no", "sr.", "no", "no.", "serial", "serial no",
+  "total", "time", "sot", "factory ot", "ie sot", "business sot"]);
+const ARTICLE_LABELS = ["article", "article name", "article no", "article number", "article no.", "model", "model no", "style", "style no"];
+
 function efficiencyKey(label) {
   if (label.startsWith("assembly owe")) return "Assembly OWE";
   if (label.startsWith("assembly manpower")) return "Assembly Manpower (D)";
   if (label.startsWith("target output/hr") && label.includes("assemb")) return "Target Output/HR Avg (Assembly)";
+  if (label === "avg hourly output") return "Target Output/HR Avg (Assembly)";
   if (label.startsWith("highest possible")) return "Highest Possible Output/HR";
   if (label.startsWith("stitching owe")) return "Stitching OWE";
   if (label.startsWith("stitching manpower")) return "Stitching Manpower (D)";
   if (label.startsWith("target output/hr") && label.includes("sewing")) return "Target Output/HR Avg (Sewing)";
   return null;
 }
-const NOTE_KEYS = {
-  "special note:": "Special Note", "special note": "Special Note",
-  "tech. data": "Tech. Data", "tech data": "Tech. Data",
-  "physical sample": "Physical Sample",
-  "sample autopsy": "Sample Autopsy",
-  "recommendation": "Recommendation",
-};
+// → {group:"ignore"} | {group, key} | null (unknown)
+function resolveField(label) {
+  const n = normLabel(label);
+  if (IGNORE_LABELS.has(n)) return { group: "ignore" };
+  if (FIELDS[n]) return { group: FIELDS[n][0], key: FIELDS[n][1] };
+  const eff = efficiencyKey(n);
+  if (eff) return { group: "efficiency", key: eff };
+  if (NOTE_KEYS[n]) return { group: "notes", key: NOTE_KEYS[n] };
+  return null;
+}
 
 function cleanCell(v) {
   if (v === undefined || v === null || v === "") return "";
   if (typeof v === "number") return Math.round(v * 100) / 100;
   return String(v).trim();
 }
+// Cell value; cells formatted as % in Excel come back as "75%" (not 0.75); Excel dates → yyyy-mm-dd.
+function cellOut(XLSX, sheet, range, rows, r, c, key) {
+  const raw = rows[r] ? rows[r][c] : "";
+  const cell = sheet[XLSX.utils.encode_cell({ r: r + range.s.r, c: c + range.s.c })];
+  if (cell && typeof cell.v === "number" && typeof cell.z === "string" && cell.z.includes("%")) return `${Math.round(cell.v * 10000) / 100}%`;
+  if (DATE_KEYS.has(key) && typeof raw === "number") { const d = XLSX.SSF.parse_date_code(raw); return `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`; }
+  return raw;
+}
+// numbers typed as text ("3.5", or a typo like "1..6") count as numbers
+function asNumber(v) {
+  if (typeof v === "number") return isFinite(v) ? v : null;
+  if (typeof v === "string" && /^\s*\d+(\.{1,2}\d+)?\s*$/.test(v)) return Number(v.replace(/\.{2,}/g, "."));
+  return null;
+}
+const isBlank = (v) => v === "" || v === undefined || v === null || (typeof v === "string" && !v.trim());
 
-// Reads one sheet's rows into [{article, construction, costing, businessSOT, efficiency, notes, col}]
-function parseArticleSheet(XLSX, sheet) {
+function newRow(article) {
+  return { article, construction: {}, costing: {}, businessSOT: {}, efficiency: {}, notes: {}, extra: {}, unk: {}, unkRegion: {} };
+}
+// puts a recognised value in the right bucket
+function putField(row, group, key, value) {
+  if (group === "ignore" || isBlank(value)) return;
+  const v = cleanCell(value);
+  if (v === "") return;
+  if (group === "notes" || group === "extra" || group === "construction" || group === "costing" || group === "efficiency") row[group][key] = v;
+}
+// remembers an unrecognised label + value (decided later in the review step)
+function putUnknown(ctx, row, label, region, value) {
+  if (isBlank(value) || value === 0) return;
+  if (typeof value === "string" && asNumber(value) !== null) value = asNumber(value);
+  const n = normLabel(label);
+  row.unk[n] = value;
+  row.unkRegion[n] = region;
+  let u = ctx.unknown.get(n);
+  if (!u) { u = { label: String(label).trim(), region, count: 0, samples: [], numeric: true }; ctx.unknown.set(n, u); }
+  u.count++;
+  if (typeof value !== "number") u.numeric = false;
+  const sv = String(typeof value === "number" ? Math.round(value * 100) / 100 : value).trim().slice(0, 40);
+  if (u.samples.length < 3 && !u.samples.includes(sv)) u.samples.push(sv);
+}
+
+// ===== Layout 1: article cards (article names across row 1, labels down column A) =====
+function parseCardSheet(XLSX, sheet, ctx) {
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
-  if (!rows[0] || normLabel(rows[0][0]) !== "article name") return [];
+  if (!rows[0] || !ARTICLE_LABELS.includes(normLabel(rows[0][0]))) return [];
+  const range = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]) : { s: { r: 0, c: 0 } };
 
   let timeRow = -1, totalRow = -1;
   rows.forEach((r, i) => {
@@ -1005,65 +1101,134 @@ function parseArticleSheet(XLSX, sheet) {
   for (let col = 1; col < header.length; col++) {
     const article = String(header[col] ?? "").trim();
     if (!article) continue;
-    // Value of a cell; cells formatted as % in Excel come back as "75%" (not 0.75).
-    const range = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]) : { s: { r: 0, c: 0 } };
-    const get = (r) => {
-      const raw = rows[r] ? rows[r][col] : "";
-      const cell = sheet[XLSX.utils.encode_cell({ r: r + range.s.r, c: col + range.s.c })];
-      if (cell && typeof cell.v === "number" && typeof cell.z === "string" && cell.z.includes("%")) {
-        return `${Math.round(cell.v * 10000) / 100}%`;
-      }
-      return raw;
-    };
-
-    const construction = {}, costing = {}, businessSOT = {}, efficiency = {}, notes = {};
-
-    // top section: first occurrence of each label wins
+    const row = newRow(article);
+    row.col = col;
+    const get = (r, key) => cellOut(XLSX, sheet, range, rows, r, col, key);
     const seen = new Set();
-    for (let r = 1; r < timeRow; r++) {
-      const label = normLabel(rows[r][0]);
-      const t = TOP_LABELS[label];
-      if (!t || seen.has(label)) continue;
-      seen.add(label);
-      let v = get(r);
-      if (v === "" || v === undefined) continue;
-      if (DATE_KEYS.has(t[1]) && typeof v === "number") {
-        const d = XLSX.SSF.parse_date_code(v);
-        v = `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
-      }
-      (t[0] === "costing" ? costing : construction)[t[1]] = cleanCell(v);
-    }
-    construction.Construction = construction.Construction || "";
 
-    // Business SOT minutes (first column of the block only)
-    for (let r = timeRow + 1; r < totalRow; r++) {
-      const op = OP_BY_NORM[normLabel(rows[r][0])];
-      const v = get(r);
-      if (op && typeof v === "number") businessSOT[op] = Math.round(v * 100) / 100;
-    }
-
-    // efficiency + notes (below the Total row)
-    for (let r = totalRow + 1; r < rows.length; r++) {
-      const label = normLabel(rows[r][0]);
+    for (let r = 1; r < rows.length; r++) {
+      const label = String(rows[r][0] ?? "").trim();
       if (!label) continue;
-      const effKey = efficiencyKey(label);
-      if (effKey) { const v = cleanCell(get(r)); if (v !== "") efficiency[effKey] = v; continue; }
-      const noteKey = NOTE_KEYS[label];
-      if (noteKey) {
-        // the note's text can span this row and the rows below it (blank label column)
+      const n = normLabel(label);
+
+      if (r > timeRow && r < totalRow) {                       // ----- operations (Business SOT = first column of the block)
+        const op = resolveOp(label);
+        const v = get(r);
+        if (op) { ctx.known.add(n); const nv = asNumber(v); if (nv !== null && nv > 0) row.businessSOT[op] = Math.round(((row.businessSOT[op] || 0) + nv) * 100) / 100; }
+        else putUnknown(ctx, row, label, "op", v);
+        continue;
+      }
+      if (r === timeRow || r === totalRow) continue;
+
+      const f = resolveField(label);                             // ----- everything else
+      if (!f) { putUnknown(ctx, row, label, "field", get(r)); continue; }
+      ctx.known.add(n);
+      if (f.group === "ignore" || seen.has(n)) continue;
+      seen.add(n);
+      if (f.group === "notes") {
+        // a note's text can span this row and the rows below it (blank label column)
         const parts = [];
         for (let k = r; k < rows.length; k++) {
-          if (k > r && normLabel(rows[k][0])) break;
+          if (k > r && String(rows[k][0] ?? "").trim()) break;
           const v = cleanCell(get(k));
           if (v !== "") parts.push(String(v));
         }
-        if (parts.length) notes[noteKey] = parts.join("\n");
-      }
+        if (parts.length) row.notes[f.key] = parts.join("\n");
+      } else putField(row, f.group, f.key, get(r, f.key));
     }
-
-    out.push({ article, construction, costing, businessSOT, efficiency, notes, col });
+    row.construction.Construction = row.construction.Construction || "";
+    out.push(row);
   }
   return out;
+}
+
+// ===== Layout 2: table (one row per article, labels across a header row) =====
+function parseTableSheet(XLSX, sheet, ctx) {
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
+  const range = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]) : { s: { r: 0, c: 0 } };
+  let h = -1, cArt = -1;
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const labels = rows[i].map(normLabel);
+    const a = labels.findIndex((l) => ARTICLE_LABELS.includes(l));
+    const recognised = labels.filter((l) => l && (resolveField(l) || resolveOp(l))).length;
+    if (a >= 0 && recognised >= 4) { h = i; cArt = a; break; }
+  }
+  if (h < 0) return [];
+  const heads = rows[h];
+  const labels = heads.map(normLabel);
+  let firstOp = labels.findIndex((l) => l && resolveOp(l) && !resolveField(l));
+  if (firstOp < 0) firstOp = labels.indexOf("sot") + 1;
+  const cSL = labels.findIndex((l) => ["s/l.", "s/l", "sl", "sl.", "sl no", "sl. no", "sr", "sr no", "no", "no.", "serial no"].includes(l));
+  const text = (v) => String(v ?? "").trim();
+
+  const out = [];
+  for (let i = h + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const row = newRow(text(r[cArt]));
+    const sl = cSL >= 0 ? text(r[cSL]) : "";
+    for (let c = 0; c < heads.length; c++) {
+      const label = text(heads[c]);
+      if (!label || c === cArt) continue;
+      const n = labels[c];
+      const v = cellOut(XLSX, sheet, range, rows, i, c);
+      if (c >= firstOp) {
+        const op = resolveOp(label);
+        if (op) { ctx.known.add(n); const nv = asNumber(v); if (nv !== null && nv > 0) row.businessSOT[op] = Math.round(((row.businessSOT[op] || 0) + nv) * 100) / 100; }
+        else if (!IGNORE_LABELS.has(n)) putUnknown(ctx, row, label, "op", v);
+      } else {
+        const f = resolveField(label);
+        if (!f) { putUnknown(ctx, row, label, "field", v); continue; }
+        ctx.known.add(n);
+        if (f.group === "ignore") continue;
+        const val = cellOut(XLSX, sheet, range, rows, i, c, f.key);
+        putField(row, f.group, f.key, typeof val === "string" ? val.trim().replace(/^none$/i, "") : val);
+      }
+    }
+    const hasData = row.article || Object.keys(row.costing).length || Object.keys(row.businessSOT).length;
+    if (!hasData) continue;
+    if (!row.article) {
+      row.autoNamed = true;
+      const parts = [row.costing.Customer, row.costing.Brand, row.costing["Types of Shoe"]].filter(Boolean).join("-").toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "");
+      row.article = `${parts || "SL"}-${sl || i + range.s.r + 1}`;
+    }
+    row.construction.Construction = row.construction.Construction || "";
+    row.importKey = `${sl || "r" + (i + range.s.r + 1)}|${row.article}`;
+    row.anchorRow = i + range.s.r; // 0-based sheet row → used to find the photo
+    out.push(row);
+  }
+  return out;
+}
+
+// ===== Decisions for labels the app does not know yet =====
+// decision: "keep" | "skip" | "op:<Operation>" | "field:<group>|<key>"
+function tidyName(label) {
+  return String(label).trim().toLowerCase().replace(/(^|[\s(\/&])([a-z])/g, (m, p, c) => p + c.toUpperCase()).replace(/\bUv\b/g, "UV").replace(/\bWp\b/g, "WP");
+}
+function applyDecisions(rows, decisions) {
+  const stats = { kept: new Set(), mapped: new Set(), skipped: new Set() };
+  rows.forEach((row) => {
+    Object.entries(row.unk || {}).forEach(([n, value]) => {
+      const dec = decisions[n] || "keep";
+      const num = typeof value === "number" ? Math.round(value * 100) / 100 : null;
+      if (dec === "skip") { stats.skipped.add(n); return; }
+      if (dec.startsWith("op:")) {
+        const op = dec.slice(3);
+        if (num > 0) row.businessSOT[op] = Math.round(((row.businessSOT[op] || 0) + num) * 100) / 100;
+        stats.mapped.add(n); return;
+      }
+      if (dec.startsWith("field:")) {
+        const [group, key] = dec.slice(6).split("|");
+        putField(row, group, key, value);
+        stats.mapped.add(n); return;
+      }
+      // keep as a new item
+      const name = tidyName(n);
+      if (num > 0 && row.unkRegion[n] === "op") row.businessSOT[name] = Math.round(((row.businessSOT[name] || 0) + num) * 100) / 100;
+      else row.extra[name] = typeof value === "number" ? num : String(value).trim();
+      stats.kept.add(n);
+    });
+  });
+  return stats;
 }
 
 // Maps sheet name -> [{col, row, dataUrl}] using the drawing anchors,
@@ -1165,15 +1330,81 @@ async function readWorkbookRobust(XLSX, JSZip, zip, sheets) {
   const out = await clean.generateAsync({ type: "uint8array", compression: "DEFLATE" });
   return XLSX.read(out, { type: "array", cellNF: true, sheets: sheets.filter((s) => !s.hidden).map((s) => s.name) });
 }
+
+
+function pickImageForRow(images, row0) {
+  const im = (images || []).find((x) => x.row === row0 && x.col >= 3 && x.col <= 7);
+  return im ? `data:image/${im.ext === "jpg" ? "jpeg" : im.ext};base64,${im.base64}` : null;
+}
 // ---- PARSER END ----
 
-let importQueue = []; // [{article, construction, costing, businessSOT, efficiency, notes, imageDataUrl}]
+// ---- Review step: labels the app does not know yet --------------------------------
+const MAP_TARGET_FIELDS = [
+  ["costing", "Customer"], ["costing", "Brand"], ["costing", "Types of Shoe"], ["costing", "Stage"], ["costing", "Size Range"], ["costing", "Gender"],
+  ["costing", "Order Qty"], ["costing", "Order Status"], ["construction", "Construction"], ["construction", "Outsole"], ["construction", "Upper Material"],
+  ["efficiency", "Assembly OWE"], ["efficiency", "Assembly Manpower (D)"], ["efficiency", "Target Output/HR Avg (Assembly)"], ["efficiency", "Highest Possible Output/HR"],
+  ["efficiency", "Stitching OWE"], ["efficiency", "Stitching Manpower (D)"], ["efficiency", "Target Output/HR Avg (Sewing)"],
+  ["notes", "Special Note"], ["notes", "Tech. Data"], ["notes", "Physical Sample"], ["notes", "Sample Autopsy"], ["notes", "Recommendation"],
+];
+const decKey = (n) => encodeURIComponent(n).replace(/\./g, "%2E");
+async function loadSavedDecisions() {
+  try {
+    const snap = await getDoc(doc(db, "config", "importMap"));
+    const raw = snap.exists() ? snap.data().decisions || {} : {};
+    return Object.fromEntries(Object.entries(raw).map(([k, v]) => [decodeURIComponent(k), v]));
+  } catch (_) { return {}; }
+}
+async function saveDecisions(newOnes) {
+  if (!Object.keys(newOnes).length) return;
+  try {
+    await setDoc(doc(db, "config", "importMap"), { decisions: Object.fromEntries(Object.entries(newOnes).map(([k, v]) => [decKey(k), v])) }, { merge: true });
+  } catch (err) { console.warn("Could not save import answers:", err); }
+}
+
+// Shows the unknown labels and resolves with {label: decision}. Nothing is imported before the user answers.
+function askAboutNewLabels(unknownList) {
+  return new Promise((resolve) => {
+    const box = document.getElementById("import-review");
+    box.innerHTML = `<p class="section-label">New labels found in this file</p>
+      <p class="muted" style="font-size:13px;margin:0 0 12px;">These names are not in the app yet. For each one choose: <strong>Keep</strong> (it becomes a new item on every card that has it), <strong>Map</strong> to something the app already has, or <strong>Skip</strong>. Your answers are remembered for the next file.</p>`;
+    const rows = [];
+    unknownList.forEach((u) => {
+      const row = document.createElement("div");
+      row.className = "review-row";
+      const sel = document.createElement("select");
+      const opt = (v, t, parent) => { const o = document.createElement("option"); o.value = v; o.textContent = t; (parent || sel).appendChild(o); };
+      opt("keep", u.region === "op" && u.numeric ? "Keep as a new operation (minutes)" : "Keep as a new item (shown under “Other details”)");
+      opt("skip", "Skip — do not import");
+      const g1 = document.createElement("optgroup"); g1.label = "Map to a Business SOT operation";
+      BUSINESS_SOT_OPERATIONS.forEach((op) => opt("op:" + op, op, g1)); sel.appendChild(g1);
+      const g2 = document.createElement("optgroup"); g2.label = "Map to an info field";
+      MAP_TARGET_FIELDS.forEach(([g, k]) => opt(`field:${g}|${k}`, k, g2)); sel.appendChild(g2);
+      row.innerHTML = `<div><strong>${esc(u.label)}</strong><div class="muted" style="font-size:12px;">${u.count} row${u.count === 1 ? "" : "s"} have a value${u.samples.length ? ", e.g. " + esc(u.samples.join(", ")) : ""} · ${u.region === "op" ? "among the operations" : "among the info fields"}</div></div>`;
+      row.appendChild(sel);
+      box.appendChild(row);
+      rows.push([u.n, sel]);
+    });
+    const go = document.createElement("button");
+    go.className = "btn btn-primary"; go.type = "button"; go.style.marginTop = "12px"; go.textContent = "Apply and continue";
+    go.onclick = () => {
+      box.hidden = true; box.innerHTML = "";
+      resolve(Object.fromEntries(rows.map(([n, sel]) => [n, sel.value])));
+    };
+    box.appendChild(go);
+    box.hidden = false;
+  });
+}
+
+let importQueue = []; // [{article, construction, costing, businessSOT, efficiency, notes, extra, imageDataUrl}]
 
 document.getElementById("import-file").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const statusBox = document.getElementById("import-status");
   statusBox.hidden = false; statusBox.textContent = "Reading workbook…";
+  document.getElementById("import-review").hidden = true;
+  document.getElementById("import-preview").innerHTML = "";
+  document.getElementById("import-confirm-btn").style.display = "none";
 
   try {
     const [{ default: JSZip }, XLSX] = await Promise.all([
@@ -1194,17 +1425,51 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
       console.warn("Could not read photos from workbook:", imgErr);
     }
 
+    // 1) read every visible sheet; each layout is recognised automatically
+    const ctx = { known: new Set(), unknown: new Map() };
+    const unrecognised = [];
     importQueue = [];
     for (const { name: sheetName, hidden } of sheets) {
       if (hidden || !workbook.Sheets[sheetName]) continue; // never read hidden sheets
-      const articles = parseArticleSheet(XLSX, workbook.Sheets[sheetName]);
-      for (const a of articles) {
-        importQueue.push({ ...a, imageDataUrl: pickImageForArticle(imagesBySheet[sheetName], a.col) });
-      }
+      const sheet = workbook.Sheets[sheetName];
+      const cards = parseCardSheet(XLSX, sheet, ctx);
+      if (cards.length) { cards.forEach((a) => importQueue.push({ ...a, imageDataUrl: pickImageForArticle(imagesBySheet[sheetName], a.col) })); continue; }
+      const table = parseTableSheet(XLSX, sheet, ctx);
+      if (table.length) { table.forEach((a) => importQueue.push({ ...a, imageDataUrl: pickImageForRow(imagesBySheet[sheetName], a.anchorRow) })); continue; }
+      if (sheet["!ref"] && !(sheet["A1"] && ARTICLE_LABELS.includes(normLabel(sheet["A1"].v)))) unrecognised.push(sheetName);
     }
 
+    // 2) labels the app has never seen: use remembered answers, ask about the rest
+    const saved = await loadSavedDecisions();
+    const unknownList = [...ctx.unknown.entries()].map(([n, u]) => ({ ...u, n }));
+    const toAsk = unknownList.filter((u) => !saved[u.n]);
+    let answers = {};
+    if (toAsk.length) {
+      statusBox.textContent = `${ctx.known.size} labels recognised, ${toAsk.length} new — please decide below.`;
+      answers = await askAboutNewLabels(toAsk);
+      await saveDecisions(answers);
+    }
+    const decisions = { ...saved, ...answers };
+    const stats = applyDecisions(importQueue, decisions);
+
+    // 3) rows imported in an earlier run are skipped (table layout)
+    if (importQueue.some((r) => r.importKey)) {
+      statusBox.textContent = "Checking which rows were imported before…";
+      const done = new Set();
+      (await getDocs(collection(db, "sots"))).forEach((d) => { if (d.data().importKey) done.add(d.data().importKey); });
+      importQueue.forEach((r) => { if (r.importKey && done.has(r.importKey)) r.skip = true; });
+    }
     const withPhoto = importQueue.filter((r) => r.imageDataUrl).length;
-    statusBox.textContent = `Found ${importQueue.length} article${importQueue.length === 1 ? "" : "s"} (${withPhoto} with photo). Review below, then confirm.`;
+    const skipped = importQueue.filter((r) => r.skip).length;
+    const auto = importQueue.filter((r) => r.autoNamed).length;
+    const dupNames = importQueue.length - new Set(importQueue.map((r) => r.article)).size;
+    statusBox.textContent = `Found ${importQueue.length} entr${importQueue.length === 1 ? "y" : "ies"} (${withPhoto} with photo). ` +
+      `Labels: ${ctx.known.size} matched automatically, ${stats.kept.size} new kept, ${stats.mapped.size} mapped, ${stats.skipped.size} skipped.` +
+      (auto ? ` ${auto} had no article number and got an automatic name.` : "") +
+      (dupNames ? ` ${dupNames} repeat an article number (saved as versions).` : "") +
+      (skipped ? ` ${skipped} already imported earlier (will be skipped).` : "") +
+      (unrecognised.length ? ` Not recognised and left out: sheet ${unrecognised.map((n) => "“" + n + "”").join(", ")} (no article header found).` : "") +
+      " Review below, then confirm.";
     renderImportPreview();
     document.getElementById("import-confirm-btn").style.display = importQueue.length ? "inline-block" : "none";
   } catch (err) {
@@ -1212,38 +1477,67 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
   }
 });
 
+const IMPORT_PREVIEW_LIMIT = 80;
 function renderImportPreview() {
   const box = document.getElementById("import-preview");
   box.innerHTML = "";
-  importQueue.forEach((row, i) => {
+  importQueue.slice(0, IMPORT_PREVIEW_LIMIT).forEach((row, i) => {
     const ops = Object.keys(row.businessSOT || {}).length;
     const total = Object.values(row.businessSOT || {}).reduce((a, b) => a + Number(b), 0);
     const effCount = Object.keys(row.efficiency || {}).length;
     const noteCount = Object.keys(row.notes || {}).length;
-    const line1 = [row.construction.Construction, row.construction.Outsole, row.costing.Customer].filter(Boolean).join(" · ") || "—";
+    const line1 = [row.construction.Construction, row.construction.Outsole, row.costing["Types of Shoe"], row.costing.Customer, row.costing.Brand].filter(Boolean).join(" · ") || "—";
     const line2 = `Business SOT: ${ops} ops, total ${Math.round(total * 100) / 100} min · Efficiency: ${effCount}/7 · Notes: ${noteCount}`;
     const div = document.createElement("div");
     div.className = "import-row";
     div.innerHTML = `
       ${row.imageDataUrl ? `<img src="${row.imageDataUrl}" />` : `<div class="muted" style="width:56px;height:56px;display:flex;align-items:center;justify-content:center;font-size:10px;border:1px dashed #cdbfa8;border-radius:6px;">no photo</div>`}
-      <div><strong>${row.article}</strong><div class="muted" style="font-size:12px;">${line1}</div><div class="muted" style="font-size:12px;">${line2}</div></div>
-      <span class="status" id="import-status-${i}">ready</span>`;
+      <div><strong>${esc(row.article)}</strong>${row.autoNamed ? ' <span class="muted" style="font-size:11px;">(auto name)</span>' : ""}<div class="muted" style="font-size:12px;">${esc(line1)}</div><div class="muted" style="font-size:12px;">${line2}</div></div>
+      <span class="status" id="import-status-${i}">${row.skip ? "already imported" : "ready"}</span>`;
     box.appendChild(div);
   });
+  if (importQueue.length > IMPORT_PREVIEW_LIMIT) {
+    const more = document.createElement("p");
+    more.className = "muted"; more.style.fontSize = "13px";
+    more.textContent = `…and ${importQueue.length - IMPORT_PREVIEW_LIMIT} more rows (all of them are imported when you confirm).`;
+    box.appendChild(more);
+  }
 }
 
+// Photo upload + AI embedding for up to 3 rows at the same time; saving to the database
+// happens strictly in file order (so repeated article numbers become versions in order).
 document.getElementById("import-confirm-btn").addEventListener("click", async () => {
   const btn = document.getElementById("import-confirm-btn");
+  const statusBox = document.getElementById("import-status");
   btn.disabled = true;
-  for (let i = 0; i < importQueue.length; i++) {
-    const row = importQueue[i];
-    const statusEl = document.getElementById(`import-status-${i}`);
-    try {
-      statusEl.textContent = "uploading photo…";
+  const setRow = (i, t) => { const el = document.getElementById(`import-status-${i}`); if (el) el.textContent = t; };
+  const todo = importQueue.map((row, i) => ({ row, i })).filter((x) => !x.row.skip);
+
+  let running = 0; const waiting = [];
+  const limit = async (fn) => {
+    while (running >= 3) await new Promise((r) => waiting.push(r));
+    running++;
+    try { return await fn(); } finally { running--; waiting.shift()?.(); }
+  };
+  const prep = new Map();
+  todo.forEach(({ row, i }) => {
+    prep.set(i, limit(async () => {
+      setRow(i, "uploading photo…");
       const photoUrl = row.imageDataUrl ? await uploadToCloudinary(dataUrlToFile(row.imageDataUrl, `${row.article}.jpg`)) : "";
-      statusEl.textContent = "embedding…";
+      setRow(i, "embedding…");
       const embedding = photoUrl ? await embedImage(photoUrl) : new Array(512).fill(0);
-      statusEl.textContent = "saving…";
+      return { photoUrl, embedding };
+    }));
+    prep.get(i).catch(() => {}); // errors are handled below, in order
+  });
+
+  let ok = 0, failed = 0;
+  for (let n = 0; n < todo.length; n++) {
+    const { row, i } = todo[n];
+    statusBox.textContent = `Importing… ${n} of ${todo.length} done` + (failed ? `, ${failed} failed` : "") + ". Keep this tab open.";
+    try {
+      const { photoUrl, embedding } = await prep.get(i);
+      setRow(i, "saving…");
       const isNewVersion = await saveSotWithVersioning({
         article: row.article,
         construction: row.construction,
@@ -1251,16 +1545,21 @@ document.getElementById("import-confirm-btn").addEventListener("click", async ()
         businessSOT: row.businessSOT || {},
         efficiency: row.efficiency || {},
         notes: row.notes || {},
+        extra: row.extra || {},
+        ...(row.importKey ? { importKey: row.importKey } : {}),
         photoUrl,
         embedding,
       });
-      statusEl.textContent = isNewVersion ? "saved (new version)" : "saved";
+      setRow(i, isNewVersion ? "saved (new version)" : "saved");
+      ok++;
     } catch (err) {
-      statusEl.textContent = "failed: " + err.message;
+      setRow(i, "failed: " + err.message);
+      failed++;
     }
   }
   btn.disabled = false;
-  document.getElementById("import-status").textContent = "Import finished — check the statuses above.";
+  statusBox.textContent = `Import finished: ${ok} saved` + (failed ? `, ${failed} failed (upload the same file again — rows already saved are skipped)` : "") + ".";
+  invalidateSotCache();
 });
 
 function dataUrlToFile(dataUrl, filename) {
