@@ -1188,7 +1188,7 @@ function parseTableSheet(XLSX, sheet, ctx) {
     if (!hasData) continue;
     if (!row.article) {
       row.autoNamed = true;
-      const parts = [row.costing.Customer, row.costing.Brand, row.costing["Types of Shoe"]].filter(Boolean).join("-").toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const parts = [row.costing.Customer, row.costing.Brand, row.costing["Types of Shoe"]].filter(Boolean).filter((v, i, arr) => arr.findIndex((w) => String(w).trim().toLowerCase() === String(v).trim().toLowerCase()) === i).join("-").toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "");
       row.article = `${parts || "SL"}-${sl || i + range.s.r + 1}`;
     }
     row.construction.Construction = row.construction.Construction || "";
