@@ -174,3 +174,20 @@ html { overflow-y:auto; -webkit-overflow-scrolling:touch; }
 .review-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 0; border-top:1px solid var(--border); }
 .review-row select { max-width:300px; font-family:var(--font-sans); font-size:14px; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--ink); }
 @media (max-width:720px) { .review-row { flex-direction:column; align-items:stretch; } .review-row select { max-width:none; } }
+
+.result-sot { font-family:var(--font-mono); font-size:11px; color:var(--ink-muted); margin:4px 0 0; }
+.modal-summary { color:var(--ink-muted); font-size:13px; margin:4px 0 0; }
+.filter-select { font-size:12px; color:var(--ink-muted); margin-left:10px; }
+.filter-select select, .master-bar select, #add-sot-extra { border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-family:var(--font-sans); font-size:13px; background:var(--surface, #fff); color:var(--ink); }
+.master-bar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px; }
+.master-bar input[type=text] { flex:1 1 240px; border:1px solid var(--border); border-radius:6px; padding:8px 10px; font-size:14px; }
+.inline-check { font-size:13px; color:var(--ink-muted); display:flex; gap:6px; align-items:center; }
+.master-wrap { overflow:auto; max-height:70vh; border:1px solid var(--border); border-radius:8px; }
+.master-table { border-collapse:collapse; font-size:13px; width:100%; }
+.master-table th, .master-table td { padding:6px 10px; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; }
+.master-table th { position:sticky; top:0; background:#f4f1ea; color:var(--ink-muted); font-size:11px; text-transform:uppercase; z-index:1; }
+.master-table th.sortable { cursor:pointer; }
+.master-table tbody tr { cursor:pointer; }
+.master-table tbody tr:hover { background:rgba(0,0,0,.04); }
+.master-thumb { width:56px; height:42px; object-fit:contain; display:block; }
+.master-table .op-col { text-align:right; }
