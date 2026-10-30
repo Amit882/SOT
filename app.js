@@ -18,13 +18,21 @@ import { pipeline } from "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17
 // The fixed Business SOT operation list — every SOT card uses
 // exactly these rows (blank means "not used" for that article).
 // ============================================================
-const BUSINESS_SOT_OPERATIONS = [
+const CORE_OPERATIONS = [
   "Lamination", "Cutting", "Crimping", "Skiving", "UV-marking", "Embossed/Heat-seal",
   "Seamless", "Printing", "Fusing", "Loop Cutting", "Heat press", "Heat Cut", "Brush",
   "Edge color/Spray", "Bootie", "Pattern Sewing", "Embroidery", "Stitching", "UV Treatment",
   "Buffing", "Stock Fitting", "Socks Preparation", "Footbed Preparation", "Insole Preparation",
   "Sole Stitch/Preparation", "Cemented/DIP", "Packing",
 ];
+// More operations used in the SOT Master File — shown in the Add form via "Add operation".
+const EXTRA_OPERATIONS = [
+  "Elastic Press", "Upper Deco Stitch", "Foil Stamping", "Preparation", "UV Marking & Printing", "Marking",
+  "Edge Burn", "WP Gluing", "Gasket", "Belt Folding", "Sewing Preparation", "Pre Stitching", "Sole Paint",
+  "Insole", "Socks Stitching", "Insole & Heel Preparation", "Outsole Bend", "Sole Buffing", "Welt Attachment",
+  "Espadrilles Preparation", "Assembly", "Hand Stitch", "Others",
+];
+const BUSINESS_SOT_OPERATIONS = [...CORE_OPERATIONS, ...EXTRA_OPERATIONS];
 
 // Optional Gemini "AI check". The API key is NOT in this public code: it lives in the Firestore
 // document config/gemini ({ apiKey, model }) which only approved, signed-in users can read.
@@ -173,6 +181,7 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById(btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "tab-master") renderMaster().catch(() => {});
     if (btn.dataset.tab === "tab-upload" && (editingId || matchFlow || document.getElementById("add-mode-banner").style.display === "block")) {
       exitEditMode();
       document.getElementById("form-add-sot").reset();
@@ -231,7 +240,8 @@ function renderResults(container, items, showScore) {
       <div class="result-card-body">
         <span class="result-article">${item.article || "—"}</span>
         <p class="result-name">${esc(item.construction?.Construction || item.costing?.["Types of Shoe"] || "Untitled")}</p>
-        <p class="result-material">${esc(item.construction?.Outsole || [item.costing?.Customer, item.costing?.Brand].filter(Boolean).join(" · "))}</p>
+        <p class="result-material">${esc([item.costing?.Customer, item.costing?.Brand, item.costing?.["Types of Shoe"]].filter(Boolean).join(" · ") || item.construction?.Outsole || "")}</p>
+        ${totalMinutes(item.businessSOT) > 0 ? `<p class="result-sot">SOT ${totalMinutes(item.businessSOT).toFixed(1)} min</p>` : ""}
         ${item.ai ? `<p class="ai-line ai-${esc(item.ai.verdict)}"><strong>AI: ${esc(item.ai.verdict)}${item.ai.score != null ? ` · ${Math.round(item.ai.score)}/100` : ""}</strong><br>${esc(item.ai.reason)}</p>` : ""}
         ${showScore ? (item.ai
           ? `<span class="result-score score-${aiBadge(item.ai).cls}">${aiBadge(item.ai).label}</span>`
@@ -262,7 +272,14 @@ async function getAllLatestSots() {
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const buyerKey = (item) => String(item.costing?.Customer || "").trim().toLowerCase();
 const selectedBuyers = new Set(); // empty = all buyers
-const passesBuyerFilter = (item) => selectedBuyers.size === 0 || selectedBuyers.has(buyerKey(item));
+let brandFilter = "", categoryFilter = ""; // "" = all
+const brandOf = (it) => String(it.costing?.Brand || "").trim();
+const categoryOf = (it) => String(it.costing?.["Types of Shoe"] || "").trim();
+const passesBuyerFilter = (item) =>
+  (selectedBuyers.size === 0 || selectedBuyers.has(buyerKey(item))) &&
+  (!brandFilter || brandOf(item) === brandFilter) &&
+  (!categoryFilter || categoryOf(item) === categoryFilter);
+const anyFilterOn = () => selectedBuyers.size > 0 || !!brandFilter || !!categoryFilter;
 
 function renderBuyerFilters() {
   const labels = new Map();
@@ -292,10 +309,24 @@ function renderBuyerFilters() {
       });
       box.appendChild(chip);
     });
-    if (selectedBuyers.size) {
+    const addSelect = (labelText, values, current, onPick) => {
+      const wrap = document.createElement("label");
+      wrap.className = "filter-select";
+      wrap.append(labelText + " ");
+      const sel = document.createElement("select");
+      const all = document.createElement("option"); all.value = ""; all.textContent = "All"; sel.appendChild(all);
+      values.forEach((v) => { const o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o); });
+      sel.value = current;
+      sel.addEventListener("change", () => { onPick(sel.value); renderBuyerFilters(); onFilterChange(); });
+      wrap.appendChild(sel); box.appendChild(wrap);
+    };
+    const uniq = (fn) => [...new Set((sotCache || []).map(fn).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    addSelect("Brand", uniq(brandOf), brandFilter, (v) => { brandFilter = v; });
+    addSelect("Category", uniq(categoryOf), categoryFilter, (v) => { categoryFilter = v; });
+    if (anyFilterOn()) {
       const clear = document.createElement("button");
       clear.type = "button"; clear.className = "buyer-clear"; clear.textContent = "Clear";
-      clear.addEventListener("click", () => { selectedBuyers.clear(); renderBuyerFilters(); onFilterChange(); });
+      clear.addEventListener("click", () => { selectedBuyers.clear(); brandFilter = ""; categoryFilter = ""; renderBuyerFilters(); onFilterChange(); });
       box.appendChild(clear);
     }
   });
@@ -354,7 +385,7 @@ async function renderMatchResults() {
     results.hidden = true;
     status.textContent = all.length === 0
       ? "No SOT entries in the database yet — add or import some first."
-      : "No SOT with a photo for the selected buyer(s).";
+      : "No SOT with a photo for the selected filters.";
     return;
   }
   const top = scored.slice(0, 8);
@@ -523,7 +554,7 @@ async function runArticleSearch({ exact = false } = {}) {
   const emptyBox = document.getElementById("search-empty");
   const all = await getAllLatestSots();
   // nothing typed and no buyer selected → nothing to search for
-  if (!text && selectedBuyers.size === 0) { resultsBox.hidden = true; emptyBox.hidden = true; return; }
+  if (!text && !anyFilterOn()) { resultsBox.hidden = true; emptyBox.hidden = true; return; }
   let items = all.filter(passesBuyerFilter);
   if (text) {
     items = items.filter((it) => {
@@ -534,12 +565,63 @@ async function runArticleSearch({ exact = false } = {}) {
   items.sort((a, b) => String(a.article).localeCompare(String(b.article)));
   if (items.length === 0) {
     resultsBox.hidden = true; emptyBox.hidden = false;
-    emptyBox.textContent = selectedBuyers.size ? "No SOT found for the selected buyer(s)." : "No SOT found.";
+    emptyBox.textContent = anyFilterOn() ? "No SOT found for the selected filters." : "No SOT found.";
   } else {
     emptyBox.hidden = true;
     renderResults(resultsBox, items.slice(0, 60), false);
   }
 }
+
+// ============================================================
+// Master table tab — like the SOT Master File: one row per article
+// ============================================================
+const master = { sortKey: "article", dir: 1, shown: 100 };
+const natCmp = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+async function renderMaster() {
+  const all = await getAllLatestSots();
+  const q = document.getElementById("master-search").value.trim().toLowerCase();
+  const sel = { customer: document.getElementById("master-customer"), brand: document.getElementById("master-brand"), category: document.getElementById("master-category") };
+  const getters = { customer: (it) => String(it.costing?.Customer || "").trim(), brand: brandOf, category: categoryOf };
+  Object.keys(sel).forEach((k) => {
+    const cur = sel[k].value;
+    const vals = [...new Set(all.map(getters[k]).filter(Boolean))].sort(natCmp);
+    sel[k].innerHTML = `<option value="">All ${k === "category" ? "categories" : k + "s"}</option>` + vals.map((v) => `<option>${esc(v)}</option>`).join("");
+    sel[k].value = vals.includes(cur) ? cur : "";
+  });
+  let items = all.filter((it) =>
+    (!sel.customer.value || getters.customer(it) === sel.customer.value) &&
+    (!sel.brand.value || brandOf(it) === sel.brand.value) &&
+    (!sel.category.value || categoryOf(it) === sel.category.value) &&
+    (!q || [it.article, getters.customer(it), brandOf(it), categoryOf(it)].some((v) => String(v || "").toLowerCase().includes(q))));
+  const keyVal = { article: (it) => it.article, customer: getters.customer, brand: brandOf, category: categoryOf, sot: (it) => totalMinutes(it.businessSOT) };
+  const kv = keyVal[master.sortKey] || keyVal.article;
+  items.sort((a, b) => (master.sortKey === "sot" ? kv(a) - kv(b) : natCmp(kv(a), kv(b))) * master.dir);
+
+  const showOps = document.getElementById("master-ops").checked;
+  const opCols = showOps ? [...new Set([...BUSINESS_SOT_OPERATIONS, ...items.flatMap((it) => Object.keys(it.businessSOT || {}))])]
+    .filter((op) => items.some((it) => Number(it.businessSOT?.[op]) > 0)) : [];
+  const cols = [["", "S/L"], ["customer", "Customer"], ["brand", "Brand"], ["category", "Category"], ["article", "Article"], ["", "Picture"], ["sot", "SOT"]];
+  const arrow = (k) => (k && k === master.sortKey ? (master.dir > 0 ? " ▲" : " ▼") : "");
+  const head = cols.map(([k, l]) => `<th ${k ? `class="sortable" data-sort="${k}"` : ""}>${l}${arrow(k)}</th>`).join("") + opCols.map((op) => `<th class="op-col">${esc(op)}</th>`).join("");
+  const rows = items.slice(0, master.shown);
+  const body = rows.map((it, i) => `<tr data-i="${i}">
+    <td>${i + 1}</td><td>${esc(getters.customer(it))}</td><td>${esc(brandOf(it))}</td><td>${esc(categoryOf(it))}</td>
+    <td><strong>${esc(it.article)}</strong></td>
+    <td>${it.photoUrl ? `<img class="master-thumb" loading="lazy" src="${esc(it.photoUrl.replace("/upload/", "/upload/w_120,c_limit,q_auto/"))}" />` : ""}</td>
+    <td>${totalMinutes(it.businessSOT) > 0 ? totalMinutes(it.businessSOT).toFixed(1) : ""}</td>
+    ${opCols.map((op) => `<td class="op-col">${Number(it.businessSOT?.[op]) > 0 ? it.businessSOT[op] : ""}</td>`).join("")}</tr>`).join("");
+  const table = document.getElementById("master-table");
+  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  table.querySelectorAll("th.sortable").forEach((th) => th.addEventListener("click", () => {
+    const k = th.dataset.sort; master.dir = master.sortKey === k ? -master.dir : 1; master.sortKey = k; renderMaster();
+  }));
+  table.querySelectorAll("tbody tr").forEach((tr) => tr.addEventListener("click", () => { matchFlow = false; openModal(rows[Number(tr.dataset.i)]); }));
+  document.getElementById("master-count").textContent = `${items.length} article${items.length === 1 ? "" : "s"}` + (items.length > rows.length ? ` — showing first ${rows.length}` : "");
+  document.getElementById("master-more").hidden = items.length <= rows.length;
+}
+["master-search"].forEach((id) => document.getElementById(id).addEventListener("input", () => { master.shown = 100; renderMaster(); }));
+["master-customer", "master-brand", "master-category", "master-ops"].forEach((id) => document.getElementById(id).addEventListener("change", () => { master.shown = 100; renderMaster(); }));
+document.getElementById("master-more").addEventListener("click", () => { master.shown += 200; renderMaster(); });
 
 // ============================================================
 // Add SOT tab — fixed Business SOT rows + duplicate/version notice
@@ -552,8 +634,8 @@ function addSotRow(op = "", min = "", locked = false) {
       ? `<span>${op}</span><input type="hidden" class="sot-op" value="${op}" />`
       : `<input type="text" class="sot-op" value="${op}" placeholder="e.g. Cutting" />`}</td>
     <td><input type="number" step="0.1" class="sot-min" value="${min}" style="width:90px;" /></td>
-    <td>${locked ? "" : `<button type="button" class="btn-small btn-danger row-remove">✕</button>`}</td>`;
-  if (!locked) tr.querySelector(".row-remove").addEventListener("click", () => { tr.remove(); updateSotTotal(); });
+    <td>${`<button type="button" class="btn-small btn-danger row-remove">✕</button>`}</td>`;
+  tr.querySelector(".row-remove").addEventListener("click", () => { tr.remove(); updateSotTotal(); });
   tr.querySelectorAll("input.sot-min").forEach((inp) => inp.addEventListener("input", updateSotTotal));
   sotTable.appendChild(tr);
 }
@@ -563,11 +645,21 @@ function updateSotTotal() {
   document.getElementById("add-sot-total").textContent = total.toFixed(1);
 }
 document.getElementById("add-sot-row").addEventListener("click", () => addSotRow());
-BUSINESS_SOT_OPERATIONS.forEach((op) => addSotRow(op, "", true));
+const extraOpSelect = document.getElementById("add-sot-extra");
+EXTRA_OPERATIONS.forEach((op) => { const o = document.createElement("option"); o.value = op; o.textContent = op; extraOpSelect.appendChild(o); });
+extraOpSelect.addEventListener("change", () => {
+  const op = extraOpSelect.value; extraOpSelect.value = "";
+  if (!op) return;
+  const have = Array.from(sotTable.querySelectorAll(".sot-op")).find((i) => i.value === op);
+  if (have) { have.closest("tr").querySelector(".sot-min").focus(); return; }
+  addSotRow(op, "", true);
+  sotTable.querySelector("tr:last-child .sot-min").focus();
+});
+CORE_OPERATIONS.forEach((op) => addSotRow(op, "", true));
 
 function resetSotTable() {
   sotTable.querySelectorAll("tr").forEach((tr, i) => { if (i > 0) tr.remove(); });
-  BUSINESS_SOT_OPERATIONS.forEach((op) => addSotRow(op, "", true));
+  CORE_OPERATIONS.forEach((op) => addSotRow(op, "", true));
 }
 
 const dupNotice = document.getElementById("duplicate-notice");
@@ -712,7 +804,7 @@ function fillAddForm(item) {
   Object.entries(item.businessSOT || {}).forEach(([op, min]) => {
     const lockedRow = Array.from(sotTable.querySelectorAll("tr")).find((tr) => tr.querySelector(".sot-op")?.value === op);
     if (lockedRow) lockedRow.querySelector(".sot-min").value = min;
-    else addSotRow(op, min);
+    else addSotRow(op, min, BUSINESS_SOT_OPERATIONS.includes(op));
   });
   updateSotTotal();
 
@@ -832,6 +924,9 @@ async function openModal(item) {
   document.getElementById("modal-name").textContent = item.construction?.Construction || item.costing?.["Types of Shoe"] || "Untitled";
   const vTag = document.getElementById("modal-version");
   vTag.style.display = "none";
+  const sumLine = [item.costing?.Customer, item.costing?.Brand, item.costing?.["Types of Shoe"]].filter(Boolean).join(" · ");
+  const sotSum = totalMinutes(item.businessSOT);
+  document.getElementById("modal-summary").textContent = sumLine + (sotSum > 0 ? (sumLine ? "  |  " : "") + "SOT " + sotSum.toFixed(1) + " min" : "");
 
   const editBtn = document.getElementById("modal-edit-btn");
   editBtn.style.display = canUpload(currentProfile.role) ? "inline-block" : "none";
@@ -960,7 +1055,7 @@ const normLabel = (s) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase
 // ===== Label dictionary: many spellings → one canonical field =====
 const OP_ALIASES = {
   "Lamination": ["lamination"], "Cutting": ["cutting"], "Crimping": ["crimping"], "Skiving": ["skiving"],
-  "UV-marking": ["uv marking", "uv-marking", "uvmarking"], "Embossed/Heat-seal": ["embossed", "emboss", "heat seal", "heat-seal", "embossed heat seal"],
+  "UV-marking": ["uv marking", "uv-marking", "uvmarking"], "Embossed/Heat-seal": ["embossed", "emboss", "heat seal", "heat-seal", "embossed heat seal", "emboss/high frequency", "emboss/high-frequency"],
   "Seamless": ["seamless"], "Printing": ["printing", "print"], "Fusing": ["fusing"], "Loop Cutting": ["loop cutting"],
   "Heat press": ["heat press", "heat pressing"], "Heat Cut": ["heat cut"], "Brush": ["brush", "brushing"],
   "Edge color/Spray": ["edge color", "edge colour", "edge color spray", "edge colour/spray", "spray"], "Bootie": ["bootie", "bootie preparation"],
@@ -969,6 +1064,9 @@ const OP_ALIASES = {
   "Footbed Preparation": ["footbed preparation", "footbed"], "Insole Preparation": ["insole preparation"],
   "Sole Stitch/Preparation": ["sole stitch/preparation", "sole stitch", "sole preparation"],
   "Cemented/DIP": ["cemented/dip", "dip", "cementing"], "Packing": ["packing"],
+  "Welt Attachment": ["welt attachement", "welt attachment"], "Espadrilles Preparation": ["espadrilles preparatio", "espadrilles preparation"],
+  "Insole & Heel Preparation": ["insole & heel preparat", "insole and heel preparation", "insole & heel preparation"],
+  "WP Gluing": ["wp gluing", "wp glueing"], "Pre Stitching": ["pre stitching", "pre-stitching"], "Hand Stitch": ["hand stitch", "hand stitching"],
 };
 const OPS = {};
 BUSINESS_SOT_OPERATIONS.forEach((op) => { OPS[normLabel(op)] = op; });
