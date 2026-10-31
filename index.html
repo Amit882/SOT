@@ -6,7 +6,7 @@
 <title>SOT Match — Construction lookup</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=6" />
+<link rel="stylesheet" href="style.css?v=7" />
 </head>
 <body>
 
@@ -186,7 +186,7 @@
 <div class="modal-backdrop" id="modal-backdrop" hidden>
   <div class="modal">
     <div class="modal-head">
-      <img id="modal-img" src="" alt="" />
+      <img id="modal-img" src="" alt="" title="Click to enlarge" />
       <div class="modal-head-info">
         <span class="article-id" id="modal-article"></span>
         <h2 id="modal-name"></h2>
@@ -231,6 +231,7 @@
 
 <script type="module" src="firebase-config.js"></script>
 <script type="module" src="cloudinary-config.js"></script>
-<script type="module" src="app.js?v=6"></script>
+<script type="module" src="app.js?v=7"></script>
+<div id="lightbox" class="lightbox" hidden><img id="lightbox-img" alt="" /><span class="lightbox-hint">Click anywhere or press Esc to close</span></div>
 </body>
 </html>
