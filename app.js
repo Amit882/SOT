@@ -403,8 +403,8 @@ async function renderMatchResults() {
       const good = ranked.filter((x) => x.ai && x.ai.verdict !== "different");
       if (good.length) { renderResults(results, good, true); status.hidden = true; }
       else {
-        renderResults(results, ranked.slice(0, 3), true);
-        note("AI found no matching construction in the database — this looks like a NEW construction. If it really is new, add it with “Add SOT”. (Cards below are only the closest looks, not matches.)");
+        results.hidden = true;
+        note("AI found no matching or similar construction in the database — this looks like a NEW construction. If it really is new, add it with “Add SOT”.");
       }
       return;
     } catch (err) {
@@ -418,7 +418,7 @@ async function renderMatchResults() {
 
 // ---- Gemini AI check -------------------------------------------------
 let aiCache = new Map(); // cache per uploaded photo so changing the buyer filter doesn't re-ask
-async function toJpegBase64(blob, maxSide = 768) {
+async function toJpegBase64(blob, maxSide = 512) {
   const bmp = await createImageBitmap(blob);
   const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
   const canvas = document.createElement("canvas");
@@ -426,31 +426,43 @@ async function toJpegBase64(blob, maxSide = 768) {
   canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
 }
-async function candidateJpeg(url) {
-  const small = url.replace("/upload/", "/upload/w_768,c_limit,q_auto,f_jpg/");
-  const res = await fetch(small);
-  if (!res.ok) throw new Error("could not load a saved photo");
-  return toJpegBase64(await res.blob());
+const candidateImgCache = new Map(); // photo URL -> base64, so a saved photo is downloaded only once
+function candidateJpeg(url) {
+  if (!candidateImgCache.has(url)) {
+    const p = (async () => {
+      const small = url.replace("/upload/", "/upload/w_512,c_limit,q_auto,f_jpg/");
+      const res = await fetch(small);
+      if (!res.ok) throw new Error("could not load a saved photo");
+      return toJpegBase64(await res.blob());
+    })();
+    p.catch(() => candidateImgCache.delete(url));
+    candidateImgCache.set(url, p);
+  }
+  return candidateImgCache.get(url);
 }
 async function verifyWithGemini(candidates) {
-  const cacheKey = candidates.map((c) => c.id).join(",");
+  const qSig = lastQueryFile ? `${lastQueryFile.name}|${lastQueryFile.size}|${lastQueryFile.lastModified}` : "";
+  const cacheKey = qSig + "::" + candidates.map((c) => c.id).join(",");
   if (aiCache.has(cacheKey)) return candidates.map((c) => ({ ...c, ai: aiCache.get(cacheKey)[c.id] }));
 
   const letters = "ABCDEFGH";
   const parts = [{
     text:
-      "You are a footwear construction expert helping a shoe factory. Image 1 is the shoe (a photo or a technical drawing) that the user wants to identify. " +
-      "The next images are candidate records from the factory database, labelled A, B, C… with their saved details. " +
-      "For each candidate decide if it has the SAME shoe construction/style as Image 1 (shape, upper style, sole unit, closure, cut height, " +
-      "how the sole is attached). Ignore colour and whether it is a photo or a drawing. " +
+      "You are a footwear expert helping a shoe factory find the closest existing construction. Image 1 is the target shoe (a photo or a technical drawing). " +
+      "The next images are candidate records from the factory database, labelled A, B, C… with saved details. " +
+      "Judge each candidate by, in this order: (1) shoe TYPE (sandal / slide / thong sandal / sneaker / boot / loafer / flat…), " +
+      "(2) upper style and closure, (3) sole unit and how the sole is attached, (4) heel/cut height. Ignore colour, material finish, and whether it is a photo or a drawing. " +
+      "Scoring: 85-100 = same construction; 50-84 = same shoe type and a similar build, only some details differ (e.g. a thong sandal vs a strappy slide sandal); " +
+      "20-49 = related but clearly a different style; 0-19 = a different shoe type (e.g. sandal vs boot, sandal vs sneaker). " +
+      'verdict: "same" if score>=85, "similar" if 50-84, otherwise "different". ' +
       'Return ONLY JSON: {"results":[{"id":"A","verdict":"same"|"similar"|"different","score":0-100,"reason":"one short sentence"}]}',
   }];
-  parts.push({ inline_data: { mime_type: "image/jpeg", data: await toJpegBase64(lastQueryFile) } });
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i];
-    parts.push({ text: `Candidate ${letters[i]} — article ${c.article}; construction: ${c.construction?.Construction || "?"}; outsole: ${c.construction?.Outsole || "?"}; buyer: ${c.costing?.Customer || "?"}` });
-    parts.push({ inline_data: { mime_type: "image/jpeg", data: await candidateJpeg(c.photoUrl) } });
-  }
+  const [qImg, ...cImgs] = await Promise.all([toJpegBase64(lastQueryFile), ...candidates.map((c) => candidateJpeg(c.photoUrl))]);
+  parts.push({ inline_data: { mime_type: "image/jpeg", data: qImg } });
+  candidates.forEach((c, i) => {
+    parts.push({ text: `Candidate ${letters[i]} — article ${c.article}; type: ${c.costing?.["Types of Shoe"] || c.construction?.Construction || "?"}; brand: ${c.costing?.Brand || "?"}` });
+    parts.push({ inline_data: { mime_type: "image/jpeg", data: cImgs[i] } });
+  });
 
   // Try the configured model first, then other free Flash/Flash-Lite models if it is
   // overloaded (503/500), rate-limited (429) or not found (404). Retry once per model.
