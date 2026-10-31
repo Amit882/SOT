@@ -6,7 +6,7 @@
 <title>SOT Match — Construction lookup</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=5" />
+<link rel="stylesheet" href="style.css?v=6" />
 </head>
 <body>
 
@@ -112,7 +112,7 @@
 
     <!-- Add SOT -->
     <section id="tab-upload" class="tab">
-      <header class="tab-head"><h1>Add a new SOT entry</h1><p>Fill in every section — this becomes the full card.</p></header>
+      <header class="tab-head"><h1>Add a new SOT entry</h1><p>Photo, article, customer / brand / category and the operation times — same as the SOT Master File.</p></header>
       <div id="add-mode-banner" class="notice-box" style="display:none;"></div>
       <div id="match-photo-bar" class="photo-bar" hidden>
         <img id="match-photo-thumb" alt="" />
@@ -130,28 +130,11 @@
         </div>
 
         <div class="section-block">
-          <p class="section-label">Construction reference</p>
-          <div class="grid-form">
-            <label class="field"><span>Construction</span><input type="text" id="add-construction" required /></label>
-            <label class="field"><span>Outsole</span><input type="text" id="add-outsole" /></label>
-            <label class="field"><span>Upper material</span><input type="text" id="add-upper" /></label>
-            <label class="field"><span>Cemented / DIP</span><input type="text" id="add-cemented" /></label>
-            <label class="field"><span>Safety toe</span><select id="add-safety"><option>No</option><option>Yes</option></select></label>
-            <label class="field"><span>WP / NWP</span><select id="add-wp"><option>No</option><option>Yes</option></select></label>
-          </div>
-        </div>
-
-        <div class="section-block">
-          <p class="section-label">Costing / order data</p>
+          <p class="section-label">Article details</p>
           <div class="grid-form">
             <label class="field"><span>Customer</span><input type="text" id="add-customer" /></label>
-            <label class="field"><span>Stage</span><input type="text" id="add-stage" /></label>
-            <label class="field"><span>Size range</span><input type="text" id="add-size" /></label>
-            <label class="field"><span>Gender</span><select id="add-gender"><option>Men</option><option>Women</option><option>Kids</option></select></label>
-            <label class="field"><span>Order qty</span><input type="text" id="add-qty" /></label>
-            <label class="field"><span>Order status</span><input type="text" id="add-status-field" /></label>
-            <label class="field"><span>Received date</span><input type="date" id="add-received" /></label>
-            <label class="field"><span>Delivery date</span><input type="date" id="add-delivery" /></label>
+            <label class="field"><span>Brand</span><input type="text" id="add-brand" /></label>
+            <label class="field"><span>Category</span><input type="text" id="add-category" placeholder="e.g. ANKLE BOOT" /></label>
           </div>
         </div>
 
@@ -163,30 +146,6 @@
             <button type="button" id="add-sot-row" class="btn-small">+ Add custom operation</button>
           </div>
           <p class="status-line" style="margin-top:10px;">Total: <span id="add-sot-total">0.0</span> min</p>
-        </div>
-
-        <div class="section-block">
-          <p class="section-label">Efficiency &amp; output metrics</p>
-          <div class="grid-form">
-            <label class="field"><span>Assembly OWE</span><input type="text" id="add-assembly-owe" /></label>
-            <label class="field"><span>Assembly manpower (D)</span><input type="number" id="add-assembly-manpower" /></label>
-            <label class="field"><span>Target output/hr avg (Assembly)</span><input type="number" id="add-target-assembly" /></label>
-            <label class="field"><span>Highest possible output/hr</span><input type="number" id="add-highest-output" /></label>
-            <label class="field"><span>Stitching OWE</span><input type="text" id="add-stitching-owe" /></label>
-            <label class="field"><span>Stitching manpower (D)</span><input type="number" id="add-stitching-manpower" /></label>
-            <label class="field"><span>Target output/hr avg (Sewing)</span><input type="number" id="add-target-sewing" /></label>
-          </div>
-        </div>
-
-        <div class="section-block">
-          <p class="section-label">Notes</p>
-          <div class="grid-form">
-            <label class="field field-wide"><span>Special note</span><input type="text" id="add-special-note" /></label>
-            <label class="field"><span>Tech. data</span><input type="text" id="add-tech-data" /></label>
-            <label class="field"><span>Physical sample</span><input type="text" id="add-physical-sample" /></label>
-            <label class="field"><span>Sample autopsy</span><input type="text" id="add-sample-autopsy" /></label>
-            <label class="field"><span>Recommendation</span><select id="add-recommendation"><option value="">—</option><option>Recommended</option><option>Not recommended</option></select></label>
-          </div>
         </div>
 
         <div id="add-status" class="status-line" hidden style="margin-top:20px;"></div>
@@ -272,6 +231,6 @@
 
 <script type="module" src="firebase-config.js"></script>
 <script type="module" src="cloudinary-config.js"></script>
-<script type="module" src="app.js?v=5"></script>
+<script type="module" src="app.js?v=6"></script>
 </body>
 </html>
