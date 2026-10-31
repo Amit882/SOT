@@ -363,7 +363,9 @@ function onFilterChange() {
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file-input");
 dropzone.addEventListener("click", () => fileInput.click());
-dropzone.addEventListener("dragover", (e) => e.preventDefault());
+dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+dropzone.addEventListener("drop", () => dropzone.classList.remove("drag"));
 dropzone.addEventListener("drop", (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) handleMatchFile(e.dataTransfer.files[0]); });
 fileInput.addEventListener("change", () => { if (fileInput.files[0]) handleMatchFile(fileInput.files[0]); });
 
@@ -923,7 +925,7 @@ async function openModal(item) {
   vTag.style.display = "none";
   const sumLine = [item.costing?.Customer, item.costing?.Brand, item.costing?.["Types of Shoe"]].filter(Boolean).join(" · ");
   const sotSum = totalMinutes(item.businessSOT);
-  document.getElementById("modal-summary").textContent = sumLine + (sotSum > 0 ? (sumLine ? "  |  " : "") + "SOT " + sotSum.toFixed(1) + " min" : "");
+  document.getElementById("modal-summary").textContent = sumLine + (sotSum > 0 ? (sumLine ? "\n" : "") + "SOT " + sotSum.toFixed(1) + " min" : "");
 
   const editBtn = document.getElementById("modal-edit-btn");
   editBtn.style.display = canUpload(currentProfile.role) ? "inline-block" : "none";
@@ -934,6 +936,11 @@ async function openModal(item) {
 
   kvGrid(document.getElementById("modal-construction"), item.construction);
   kvGrid(document.getElementById("modal-costing"), item.costing);
+  // hide sections that have nothing to show
+  ["modal-construction", "modal-costing"].forEach((id) => {
+    const g = document.getElementById(id);
+    g.parentElement.style.display = g.children.length ? "block" : "none";
+  });
 
   const effBlock = document.getElementById("modal-efficiency-block");
   const hasEff = item.efficiency && Object.values(item.efficiency).some((v) => v);
