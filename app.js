@@ -573,6 +573,20 @@ async function runArticleSearch({ exact = false } = {}) {
 }
 
 // ============================================================
+// Click a photo to see it large (modal photo)
+// ============================================================
+const lightbox = document.getElementById("lightbox");
+const lightboxImg = document.getElementById("lightbox-img");
+document.getElementById("modal-img").addEventListener("click", () => {
+  const src = document.getElementById("modal-img").src;
+  if (!src || src.endsWith("/")) return;
+  lightboxImg.src = src;
+  lightbox.hidden = false;
+});
+lightbox.addEventListener("click", () => { lightbox.hidden = true; lightboxImg.src = ""; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") lightbox.hidden = true; });
+
+// ============================================================
 // Master table tab — like the SOT Master File: one row per article
 // ============================================================
 const master = { sortKey: "article", dir: 1, shown: 100 };
@@ -633,7 +647,7 @@ function addSotRow(op = "", min = "", locked = false) {
     <td>${locked
       ? `<span>${op}</span><input type="hidden" class="sot-op" value="${op}" />`
       : `<input type="text" class="sot-op" value="${op}" placeholder="e.g. Cutting" />`}</td>
-    <td><input type="number" step="0.1" class="sot-min" value="${min}" style="width:90px;" /></td>
+    <td><input type="number" step="any" min="0" class="sot-min" value="${min}" style="width:90px;" /></td>
     <td>${`<button type="button" class="btn-small btn-danger row-remove">✕</button>`}</td>`;
   tr.querySelector(".row-remove").addEventListener("click", () => { tr.remove(); updateSotTotal(); });
   tr.querySelectorAll("input.sot-min").forEach((inp) => inp.addEventListener("input", updateSotTotal));
