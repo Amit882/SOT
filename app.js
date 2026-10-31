@@ -904,6 +904,34 @@ function exitEditMode() {
 // notes, and other versions of the same article
 // ============================================================
 const backdrop = document.getElementById("modal-backdrop");
+// ---- Delete (Master / Master God only; Firestore rules enforce this too) ----
+async function deleteSotVersion(item) {
+  if (!canManageUsers(currentProfile.role)) return;
+  if (!confirm(`Delete SOT ${item.article}${item.year ? " (" + item.year + ")" : ""}?\nThis cannot be undone.`)) return;
+  try {
+    await deleteDoc(doc(db, "sots", item.id));
+    if (item.isLatest) {
+      // promote the newest remaining version of this article, so the article does not vanish from search
+      const rest = await getDocs(query(collection(db, "sots"), where("article", "==", item.article)));
+      const list = []; rest.forEach((d) => list.push({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.year || 0) - (a.year || 0) || (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      if (list[0]) await updateDoc(doc(db, "sots", list[0].id), { isLatest: true });
+    }
+    backdrop.hidden = true;
+    invalidateSotCache();
+  } catch (err) { alert("Could not delete: " + err.message); }
+}
+async function deleteSotArticle(item) {
+  if (!canManageUsers(currentProfile.role)) return;
+  if (!confirm(`Delete article ${item.article} with ALL its versions?\nThis cannot be undone.`)) return;
+  try {
+    const all = await getDocs(query(collection(db, "sots"), where("article", "==", item.article)));
+    for (const d of all.docs) await deleteDoc(doc(db, "sots", d.id));
+    backdrop.hidden = true;
+    invalidateSotCache();
+  } catch (err) { alert("Could not delete: " + err.message); }
+}
+
 document.getElementById("modal-close").addEventListener("click", () => (backdrop.hidden = true));
 backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.hidden = true; });
 
@@ -933,6 +961,14 @@ async function openModal(item) {
   const newVerBtn = document.getElementById("modal-newversion-btn");
   newVerBtn.style.display = canUpload(currentProfile.role) ? "inline-block" : "none";
   newVerBtn.onclick = () => enterNewVersionMode(item);
+
+  // Only Master / Master God can delete.
+  const delBtn = document.getElementById("modal-delete-btn");
+  const delAllBtn = document.getElementById("modal-delete-all-btn");
+  const mayDelete = canManageUsers(currentProfile.role);
+  delBtn.hidden = !mayDelete; delAllBtn.hidden = true;
+  delBtn.onclick = () => deleteSotVersion(item);
+  delAllBtn.onclick = () => deleteSotArticle(item);
 
   kvGrid(document.getElementById("modal-construction"), item.construction);
   kvGrid(document.getElementById("modal-costing"), item.costing);
@@ -970,6 +1006,8 @@ async function openModal(item) {
   historySnap.forEach((d) => { if (d.id !== item.id) others.push({ ...d.data(), id: d.id }); });
   others.sort((a, b) => (b.year || 0) - (a.year || 0));
 
+  delAllBtn.hidden = !(mayDelete && others.length > 0);
+  delBtn.textContent = others.length > 0 ? "Delete this version" : "Delete SOT";
   if (others.length === 0) {
     historyBlock.style.display = "none";
   } else {
