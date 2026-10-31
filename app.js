@@ -685,41 +685,15 @@ function collectAddForm() {
   });
   return {
     article: document.getElementById("add-article").value.trim(),
-    construction: {
-      Construction: document.getElementById("add-construction").value.trim(),
-      Outsole: document.getElementById("add-outsole").value.trim(),
-      "Upper Material": document.getElementById("add-upper").value.trim(),
-      "Cemented/DIP": document.getElementById("add-cemented").value.trim(),
-      "Safety Toe": document.getElementById("add-safety").value,
-      "WP/NWP": document.getElementById("add-wp").value,
-    },
+    construction: {},
     costing: {
       Customer: document.getElementById("add-customer").value.trim(),
-      Stage: document.getElementById("add-stage").value.trim(),
-      "Size Range": document.getElementById("add-size").value.trim(),
-      Gender: document.getElementById("add-gender").value,
-      "Order Qty": document.getElementById("add-qty").value.trim(),
-      "Order Status": document.getElementById("add-status-field").value.trim(),
-      "Received Date": document.getElementById("add-received").value,
-      "Delivery Date": document.getElementById("add-delivery").value,
+      Brand: document.getElementById("add-brand").value.trim(),
+      "Types of Shoe": document.getElementById("add-category").value.trim(),
     },
     businessSOT,
-    efficiency: {
-      "Assembly OWE": document.getElementById("add-assembly-owe").value.trim(),
-      "Assembly Manpower (D)": document.getElementById("add-assembly-manpower").value,
-      "Target Output/HR Avg (Assembly)": document.getElementById("add-target-assembly").value,
-      "Highest Possible Output/HR": document.getElementById("add-highest-output").value,
-      "Stitching OWE": document.getElementById("add-stitching-owe").value.trim(),
-      "Stitching Manpower (D)": document.getElementById("add-stitching-manpower").value,
-      "Target Output/HR Avg (Sewing)": document.getElementById("add-target-sewing").value,
-    },
-    notes: {
-      "Special Note": document.getElementById("add-special-note").value.trim(),
-      "Tech. Data": document.getElementById("add-tech-data").value.trim(),
-      "Physical Sample": document.getElementById("add-physical-sample").value.trim(),
-      "Sample Autopsy": document.getElementById("add-sample-autopsy").value.trim(),
-      Recommendation: document.getElementById("add-recommendation").value,
-    },
+    efficiency: {},
+    notes: {},
   };
 }
 
@@ -773,32 +747,9 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
 // ---- Add-form modes: update in place / new version / brand-new entry ----
 function fillAddForm(item) {
   document.getElementById("add-article").value = item.article || "";
-  document.getElementById("add-construction").value = item.construction?.Construction || "";
-  document.getElementById("add-outsole").value = item.construction?.Outsole || "";
-  document.getElementById("add-upper").value = item.construction?.["Upper Material"] || "";
-  document.getElementById("add-cemented").value = item.construction?.["Cemented/DIP"] || "";
-  document.getElementById("add-safety").value = item.construction?.["Safety Toe"] || "No";
-  document.getElementById("add-wp").value = item.construction?.["WP/NWP"] || "No";
   document.getElementById("add-customer").value = item.costing?.Customer || "";
-  document.getElementById("add-stage").value = item.costing?.Stage || "";
-  document.getElementById("add-size").value = item.costing?.["Size Range"] || "";
-  document.getElementById("add-gender").value = item.costing?.Gender || "Men";
-  document.getElementById("add-qty").value = item.costing?.["Order Qty"] || "";
-  document.getElementById("add-status-field").value = item.costing?.["Order Status"] || "";
-  document.getElementById("add-received").value = item.costing?.["Received Date"] || "";
-  document.getElementById("add-delivery").value = item.costing?.["Delivery Date"] || "";
-  document.getElementById("add-assembly-owe").value = item.efficiency?.["Assembly OWE"] || "";
-  document.getElementById("add-assembly-manpower").value = item.efficiency?.["Assembly Manpower (D)"] || "";
-  document.getElementById("add-target-assembly").value = item.efficiency?.["Target Output/HR Avg (Assembly)"] || "";
-  document.getElementById("add-highest-output").value = item.efficiency?.["Highest Possible Output/HR"] || "";
-  document.getElementById("add-stitching-owe").value = item.efficiency?.["Stitching OWE"] || "";
-  document.getElementById("add-stitching-manpower").value = item.efficiency?.["Stitching Manpower (D)"] || "";
-  document.getElementById("add-target-sewing").value = item.efficiency?.["Target Output/HR Avg (Sewing)"] || "";
-  document.getElementById("add-special-note").value = item.notes?.["Special Note"] || "";
-  document.getElementById("add-tech-data").value = item.notes?.["Tech. Data"] || "";
-  document.getElementById("add-physical-sample").value = item.notes?.["Physical Sample"] || "";
-  document.getElementById("add-sample-autopsy").value = item.notes?.["Sample Autopsy"] || "";
-  document.getElementById("add-recommendation").value = item.notes?.Recommendation || "";
+  document.getElementById("add-brand").value = item.costing?.Brand || "";
+  document.getElementById("add-category").value = item.costing?.["Types of Shoe"] || "";
 
   resetSotTable();
   Object.entries(item.businessSOT || {}).forEach(([op, min]) => {
