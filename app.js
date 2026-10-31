@@ -12,7 +12,12 @@ import {
 // The AI model that turns a photo into a vector, running fully in the
 // browser — no server involved. First use downloads the model and the
 // browser caches it after that.
-import { pipeline } from "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2";
+// Loaded on demand (it is a big library) so the page itself starts fast.
+let _pipelineFn = null;
+async function loadPipeline() {
+  if (!_pipelineFn) _pipelineFn = (await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2")).pipeline;
+  return _pipelineFn;
+}
 
 // ============================================================
 // The fixed Business SOT operation list — every SOT card uses
@@ -50,7 +55,7 @@ async function loadGeminiConfig() {
 
 let embedder = null;
 async function getEmbedder() {
-  if (!embedder) embedder = await pipeline("image-feature-extraction", "Xenova/clip-vit-base-patch32");
+  if (!embedder) { const pipeline = await loadPipeline(); embedder = await pipeline("image-feature-extraction", "Xenova/clip-vit-base-patch32"); }
   return embedder;
 }
 async function embedImage(fileOrUrl) {
@@ -164,10 +169,14 @@ onAuthStateChanged(auth, async (user) => {
   getAllLatestSots().catch(() => {});
   loadGeminiConfig();
   applyRoleToUI(currentProfile.role);
+  prewarmModel();
   document.getElementById("user-name").textContent = currentProfile.name || user.email;
   document.getElementById("user-role").textContent = currentProfile.role.replace("_", " ");
   if (canManageUsers(currentProfile.role)) watchUsers();
 });
+
+// Warm up the AI model in the background so the first image match is quick.
+function prewarmModel() { (window.requestIdleCallback || ((f) => setTimeout(f, 2500)))(() => { getEmbedder().catch(() => {}); }); }
 
 function applyRoleToUI(role) {
   document.getElementById("nav-upload").hidden = !canUpload(role);
@@ -181,6 +190,8 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById(btn.dataset.tab).classList.add("active");
+    // pick up other people's changes: drop a cache older than 20 seconds when opening a list tab
+    if (["tab-master", "tab-search", "tab-match"].includes(btn.dataset.tab) && Date.now() - sotCacheAt > 20000) sotCache = null;
     if (btn.dataset.tab === "tab-master") renderMaster().catch(() => {});
     if (btn.dataset.tab === "tab-upload" && (editingId || matchFlow || document.getElementById("add-mode-banner").style.display === "block")) {
       exitEditMode();
@@ -257,7 +268,16 @@ function renderResults(container, items, showScore) {
 // Latest-version cache + buyer filter (shared by both search tabs)
 // ============================================================
 let sotCache = null, sotCacheAt = 0;
-function invalidateSotCache() { sotCache = null; }
+function invalidateSotCache() {
+  sotCache = null;
+  // Refresh whatever list is on screen so a save/update shows up without reloading the page.
+  setTimeout(() => {
+    const active = document.querySelector(".tab.active")?.id;
+    if (active === "tab-master") renderMaster().catch(() => {});
+    else if (active === "tab-search") runArticleSearch().catch(() => {});
+    else getAllLatestSots().catch(() => {});
+  }, 300);
+}
 async function getAllLatestSots() {
   if (!sotCache || Date.now() - sotCacheAt > 60000) {
     const snap = await getDocs(query(collection(db, "sots"), where("isLatest", "==", true)));
