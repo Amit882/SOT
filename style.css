@@ -300,3 +300,5 @@ button:focus-visible, .dropzone:focus-visible, .result-card:focus-visible, a:foc
 .chk.no { background: var(--s-weak-bg); color: var(--s-weak); }
 .related-grid { margin-top: 10px; opacity: .85; }
 .ai-related { border-left: 3px solid #8A97A5; }
+
+.build-tag { margin: 18px 0 0; font-size: 12px; color: var(--ink-muted); text-align: center; }
