@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <meta http-equiv="Cache-Control" content="no-cache" />
+<script>try{var t=localStorage.getItem("sot-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
 <script>document.write('<link rel="stylesheet" href="style.css?v=' + Date.now() + '">');</script>
 </head>
 <body>
@@ -54,12 +55,15 @@
       <button class="nav-item active" data-tab="tab-match"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8a2 2 0 0 1 2-2h2l1.5-2h5L16 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="12.5" r="3.5"/></svg><span>Find by photo</span></button>
       <button class="nav-item" data-tab="tab-search"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span>Find by article</span></button>
       <button class="nav-item" data-tab="tab-master"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 10h17M9.5 10v9.5"/></svg><span>All articles</span></button>
+      <button class="nav-item" data-tab="tab-insights"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 19.5h15M7 16V10M12 16V5M17 16v-3.5"/></svg><span>Insights</span></button>
       <button class="nav-item" data-tab="tab-upload" id="nav-upload"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v8M8 12h8"/></svg><span>Add new SOT</span></button>
       <button class="nav-item" data-tab="tab-import" id="nav-import"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/></svg><span>Import Excel</span></button>
       <button class="nav-item" data-tab="tab-users" id="nav-users"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 19.5c.6-3.3 3.1-5 6.5-5s5.9 1.7 6.5 5M16 5.5a3.2 3.2 0 0 1 0 6M18.5 14.8c1.7.6 2.7 2 3 4.7"/></svg><span>Users</span></button>
+      <button class="nav-item" data-tab="tab-activity" id="nav-activity"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 12.5h9L17.5 7M10 11v5M14 11v5"/></svg><span>Bin &amp; activity</span></button>
     </nav>
     <div class="sidebar-foot">
       <div class="user-chip"><span id="user-name">—</span><span id="user-role" class="role-pill">—</span></div>
+      <button id="theme-btn" class="btn-link" type="button">Dark mode</button>
       <button id="signout-btn" class="btn-link">Sign out</button>
     </div>
   </aside>
@@ -106,6 +110,19 @@
         <select id="master-customer"></select><select id="master-brand"></select><select id="master-category"></select>
         <label class="inline-check"><input type="checkbox" id="master-ops" /> Show operation columns</label>
       </div>
+      <div class="master-bar" style="margin-top:-2px;"><button type="button" class="btn-small" id="master-export">Export to Excel</button></div>
+      <div id="master-selbar" class="sel-bar" hidden>
+        <strong id="sel-count">0 selected</strong>
+        <button type="button" class="btn-small" id="sel-compare">Compare 2</button>
+        <button type="button" class="btn-small" id="sel-edit">Change customer / brand / category</button>
+        <button type="button" class="btn-small btn-danger" id="sel-delete">Delete selected</button>
+        <button type="button" class="btn-link" id="sel-clear">Clear</button>
+      </div>
+      <div id="bulk-panel" class="sel-bar" hidden>
+        <select id="bulk-field"><option>Customer</option><option>Brand</option><option>Types of Shoe</option></select>
+        <input type="text" id="bulk-value" placeholder="New value (leave empty to clear)" />
+        <button type="button" class="btn-small btn-approve" id="bulk-apply">Apply to selected</button>
+      </div>
       <p class="status-line" id="master-count"></p>
       <div class="master-wrap"><table class="master-table" id="master-table"></table></div>
       <button type="button" id="master-more" class="btn-small" style="margin-top:12px;" hidden>Show more</button>
@@ -127,6 +144,8 @@
           <div class="grid-form">
             <label class="field"><span>Article number</span><input type="text" id="add-article" required /></label>
             <label class="field field-wide"><span>Photo</span><input type="file" id="add-photo" accept="image/*" required /></label>
+            <label class="field field-wide"><span>More photos — side, top, sole (optional, you can pick several)</span><input type="file" id="add-photos-extra" accept="image/*" multiple /></label>
+            <div id="extra-photo-list" class="extra-list field-wide"></div>
           </div>
         </div>
 
@@ -167,6 +186,28 @@
       <button id="import-confirm-btn" class="btn btn-primary" style="margin-top:16px; display:none;">Confirm import</button>
     </section>
 
+
+    <!-- Insights -->
+    <section id="tab-insights" class="tab">
+      <header class="tab-head"><h1>Insights</h1><p>Average SOT and operation time, grouped by customer, brand or category. Useful for costing a new style.</p></header>
+      <div class="master-bar">
+        <label class="inline-check">Group by
+          <select id="ins-group"><option value="customer">Customer</option><option value="brand">Brand</option><option value="category">Category</option></select></label>
+        <select id="ins-customer"></select>
+      </div>
+      <p class="status-line" id="ins-note"></p>
+      <div class="master-wrap" style="margin-top:12px;"><table class="master-table" id="ins-summary"></table></div>
+      <p class="section-label" style="margin-top:24px;">Average minutes per operation</p>
+      <div class="master-wrap"><table class="master-table" id="ins-ops"></table></div>
+    </section>
+
+    <!-- Activity -->
+    <section id="tab-activity" class="tab">
+      <header class="tab-head"><h1>Bin &amp; activity</h1><p>Restore deleted SOTs within 30 days, and see who changed what.</p></header>
+      <div class="section-block" style="margin-top:0;"><p class="section-label">Recycle bin</p><div id="bin-list" class="user-list"></div></div>
+      <div class="section-block"><p class="section-label">Recent activity</p><div id="log-list"></div></div>
+    </section>
+
     <!-- Users -->
     <section id="tab-users" class="tab">
       <header class="tab-head"><h1>Users</h1><p>Approve new requests, or change what someone can do.</p></header>
@@ -183,11 +224,16 @@
   </main>
 </div>
 
+<!-- ============ Compare ============ -->
+<div class="modal-backdrop" id="compare-backdrop" hidden>
+  <div class="modal"><div class="modal-head" style="justify-content:space-between;align-items:center;"><h2 style="margin:0;">Compare two articles</h2><button class="modal-close" id="compare-close">✕</button></div><div class="modal-body" id="compare-body"></div></div>
+</div>
+
 <!-- ============ Detail modal ============ -->
 <div class="modal-backdrop" id="modal-backdrop" hidden>
   <div class="modal">
     <div class="modal-head">
-      <img id="modal-img" src="" alt="" title="Click to enlarge" />
+      <div class="modal-photo"><img id="modal-img" src="" alt="" title="Click to enlarge" /><div id="modal-gallery" class="gallery" hidden></div></div>
       <div class="modal-head-info">
         <span class="article-id" id="modal-article"></span>
         <h2 id="modal-name"></h2>
