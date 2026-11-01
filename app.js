@@ -87,7 +87,8 @@ function matchBand(score) {
 // When the AI has judged a candidate, its verdict replaces the visual score.
 function aiBadge(ai) {
   if (ai.verdict === "same") return { cls: "strong", label: "AI: same construction" };
-  if (ai.verdict === "similar") return { cls: "possible", label: "AI: similar" };
+  if (ai.verdict === "similar") return { cls: "possible", label: "AI: close, sole differs" };
+  if (ai.verdict === "related") return { cls: "weak", label: "Same family, different style" };
   return { cls: "weak", label: "AI: different shoe" };
 }
 
@@ -283,7 +284,7 @@ function renderResults(container, items, showScore) {
         <p class="result-name">${esc(item.construction?.Construction || item.costing?.["Types of Shoe"] || "Untitled")}</p>
         <p class="result-material">${esc([item.costing?.Customer, item.costing?.Brand, item.costing?.["Types of Shoe"]].filter(Boolean).join(" · ") || item.construction?.Outsole || "")}</p>
         ${totalMinutes(item.businessSOT) > 0 ? `<p class="result-sot">SOT ${totalMinutes(item.businessSOT).toFixed(1)} min</p>` : ""}
-        ${item.ai ? `<p class="ai-line ai-${esc(item.ai.verdict)}"><strong>AI: ${esc(item.ai.verdict)}${item.ai.score != null ? ` · ${Math.round(item.ai.score)}/100` : ""}</strong><br>${esc(item.ai.reason)}</p>` : ""}
+        ${item.ai ? `<p class="ai-line ai-${esc(item.ai.verdict)}"><strong>AI: ${esc(item.ai.verdict)}${item.ai.score != null ? ` · ${Math.round(item.ai.score)}/100` : ""}</strong><br>${esc(item.ai.reason)}</p>${item.ai.checks ? `<p class="checks">${[["type", "Type"], ["heel", "Heel"], ["style", "Style"], ["sole", "Sole"]].map(([k, l]) => `<span class="chk ${item.ai.checks[k] ? "yes" : "no"}">${item.ai.checks[k] ? "✓" : "✗"} ${l}</span>`).join("")}</p>` : ""}` : ""}
         ${showScore ? (item.ai
           ? `<span class="result-score score-${aiBadge(item.ai).cls}">${aiBadge(item.ai).label}</span>`
           : `<span class="result-score score-${matchBand(item.score).cls}">Visual ${matchPct(item.score)}% · ${matchBand(item.score).label}</span>`) : ""}
@@ -467,6 +468,7 @@ async function renderMatchResults() {
   const status = document.getElementById("match-status");
   const results = document.getElementById("match-results");
   status.hidden = false; status.textContent = "Comparing against saved constructions…";
+  document.getElementById("match-related").hidden = true; document.getElementById("match-related-head").hidden = true;
   const all = await getAllLatestSots();
   const scored = all
     .filter((d) => d.embedding && d.photoUrl && passesBuyerFilter(d))
@@ -497,21 +499,23 @@ async function renderMatchResults() {
         if (cats.length) {
           const want = new Set(cats.map((c) => c.toLowerCase()));
           const inCat = scored.filter((c) => !categoryOf(c) || want.has(categoryOf(c).toLowerCase()));
-          if (inCat.length) pool = inCat.slice(0, 8);
+          if (inCat.length) pool = inCat.slice(0, 16);
           note(`AI sees: ${cats.join(" / ")}. Comparing with ${pool.length} saved ${pool.length === 1 ? "entry" : "entries"} of that kind…`);
-          if (inCat.length) renderResults(results, pool, true);
+          if (inCat.length) renderResults(results, pool.slice(0, 8), true);
         }
       }
       // 2) strict side-by-side check
       const aiTop = await verifyWithGemini(pool);
       // AI is the judge: sort by AI score (visual score only breaks ties); hide the clearly different ones.
       const ranked = aiTop.sort((a, b) => ((b.ai?.score ?? -1) - (a.ai?.score ?? -1)) || (b.score - a.score));
-      const good = ranked.filter((x) => x.ai && x.ai.verdict !== "different");
-      if (good.length) { renderResults(results, good, true); status.hidden = true; }
-      else {
-        results.hidden = true;
-        note("AI found no matching or similar construction in the database — this looks like a NEW construction. If it really is new, add it with “Add SOT”.");
-      }
+      const matches = ranked.filter((x) => x.ai && (x.ai.verdict === "same" || x.ai.verdict === "similar"));
+      const related = ranked.filter((x) => x.ai && x.ai.verdict === "related").slice(0, 4);
+      const relBox = document.getElementById("match-related"), relHead = document.getElementById("match-related-head");
+      if (matches.length) { renderResults(results, matches, true); status.hidden = true; }
+      else { results.hidden = true; }
+      if (related.length) { relHead.hidden = false; relBox.hidden = false; renderResults(relBox, related, true); relHead.textContent = matches.length ? "Same family, different style (not a match)" : "Closest in the same family — different style, not a match"; }
+      else { relHead.hidden = true; relBox.hidden = true; }
+      if (!matches.length) note("No matching construction in the database — this looks like a NEW construction." + (related.length ? " The nearest styles of the same kind are shown below for reference." : "") + " If it really is new, add it with “Add SOT”.");
       return;
     } catch (err) {
       note("AI check unavailable (" + err.message + ") — showing visual similarity only.");
@@ -549,8 +553,10 @@ function candidateJpeg(url) {
 // Calls Gemini with the given parts and returns the parsed JSON answer.
 // Tries the configured model first, then other free Flash/Flash-Lite models if it is
 // overloaded (503/500), rate-limited (429) or not found (404). Retries once per model.
-async function geminiJson(parts) {
-  const models = [...new Set([geminiCfg.geminiModel, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash"].filter(Boolean))];
+async function geminiJson(parts, preferStrong = false) {
+  const strong = ["gemini-3.6-flash", "gemini-3.5-flash"];
+  const lite = [geminiCfg.geminiModel, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"];
+  const models = [...new Set((preferStrong ? [...strong, ...lite] : [...lite, ...strong]).filter(Boolean))];
   const payload = JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { temperature: 0, responseMimeType: "application/json" } });
   let res = null, lastMsg = "";
   outer: for (const model of models) {
@@ -595,7 +601,7 @@ async function classifyQueryCategory(categories) {
   return out;
 }
 
-async function verifyWithGemini(candidates) {
+async function verifyChunk(candidates) {
   const qSig = lastQueryFile ? `${lastQueryFile.name}|${lastQueryFile.size}|${lastQueryFile.lastModified}` : "";
   const cacheKey = qSig + "::" + candidates.map((c) => c.id).join(",");
   if (aiCache.has(cacheKey)) return candidates.map((c) => ({ ...c, ai: aiCache.get(cacheKey)[c.id] }));
@@ -603,39 +609,51 @@ async function verifyWithGemini(candidates) {
   const letters = "ABCDEFGH";
   const parts = [{
     text:
-      "You are a strict footwear expert helping a shoe factory find the closest existing construction. Image 1 is the target shoe (a photo or a technical drawing). " +
+      "You are a senior footwear development engineer at a shoe factory. Image 1 is the target shoe (a photo or a technical drawing). " +
       "The next images are candidate records from the factory database, labelled A, B, C… with saved details. " +
-      "Ignore colour, material finish, and whether it is a photo or a drawing. For EACH candidate, answer these checks about its construction compared with Image 1: " +
-      "type_match = same broad shoe family (open sandal incl. thong / slide / strappy / flip-flop; closed flat; sneaker; boot; heeled pump; …). " +
-      "heel_match = heel height class is the same or neighbouring (flat under 2 cm, low 2-4 cm, mid 4-7 cm, high over 7 cm; flat vs mid or high is NOT a match). " +
-      "style_match = upper style, toe/strap layout and closure are essentially the same (e.g. thong with ankle strap vs a slide is NOT the same style). " +
-      "sole_match = sole unit and how it is attached look the same. " +
-      "Then give a score 0-100: 85+ only if all four checks are true; 50-84 if type_match and heel_match are true but style_match or sole_match is false; below 50 if type_match or heel_match is false. " +
+      "Find out which candidates have the SAME CONSTRUCTION as Image 1. Ignore colour, material finish, lighting, angle, and whether it is a photo or a drawing. " +
+      "First look closely at Image 1 and note: shoe family, heel height, toe and strap layout, closure, sole unit. Then, for EACH candidate, answer these checks: " +
+      "type_match = same shoe family (open sandal / closed flat / sneaker / boot / heeled pump / espadrille …). " +
+      "heel_match = heel height class is the same or neighbouring (flat under 2 cm, low 2-4 cm, mid 4-7 cm, high over 7 cm; flat vs mid/high is NOT a match). " +
+      "style_match = the SAME upper layout: thong (toe post) vs slide (wide band over the foot) vs T-strap vs ankle strap vs velcro/sport straps vs closed toe are all DIFFERENT styles. A chunky sport or hiking sandal is NOT the same style as a slim casual sandal. " +
+      "sole_match = the sole unit and how it is attached look the same (thin flat sole vs thick lugged or platform sole is NOT a match). " +
+      "Be strict and honest: if nothing in the list is the same construction, say so — never inflate scores. " +
+      "Score 0-100: 85+ only if all four checks are true; 60-84 if type, heel and style match but the sole differs; 30-59 if only type and heel match; below 30 if type or heel do not match. " +
       'Return ONLY JSON: {"results":[{"id":"A","type_match":true|false,"heel_match":true|false,"style_match":true|false,"sole_match":true|false,"score":0-100,"reason":"one short sentence naming the key difference or likeness"}]}',
   }];
-  const [qImg, ...cImgs] = await Promise.all([toJpegBase64(lastQueryFile), ...candidates.map((c) => candidateJpeg(c.photoUrl))]);
+  const [qImg, ...cImgs] = await Promise.all([toJpegBase64(lastQueryFile, 640), ...candidates.map((c) => candidateJpeg(c.photoUrl))]);
   parts.push({ inline_data: { mime_type: "image/jpeg", data: qImg } });
   candidates.forEach((c, i) => {
     parts.push({ text: `Candidate ${letters[i]} — article ${c.article}; type: ${c.costing?.["Types of Shoe"] || c.construction?.Construction || "?"}; brand: ${c.costing?.Brand || "?"}` });
     parts.push({ inline_data: { mime_type: "image/jpeg", data: cImgs[i] } });
   });
 
-  const json = await geminiJson(parts);
+  const json = await geminiJson(parts, true);
   const byId = {};
   (json.results || []).forEach((r, i) => {
     const idx = letters.indexOf(String(r.id || letters[i]).trim().toUpperCase());
     const cand = candidates[idx];
     if (!cand) return;
-    // The rules are enforced here too, so a lenient model answer cannot sneak a wrong shoe type or heel in.
+    // The rules are enforced here too, so a lenient model answer cannot sneak a wrong shoe type, heel or style in.
+    const t = r.type_match !== false, hl = r.heel_match !== false, st = r.style_match !== false, so = r.sole_match !== false;
     let score = Math.max(0, Math.min(100, Number(r.score) || 0));
-    const core = r.type_match !== false && r.heel_match !== false;
-    if (!core) score = Math.min(score, 35);
-    else if (r.style_match === false || r.sole_match === false) score = Math.min(score, 84);
-    const verdict = score >= 85 ? "same" : score >= 50 ? "similar" : "different";
-    byId[cand.id] = { verdict, score, reason: String(r.reason || "") };
+    let verdict;
+    if (!(t && hl)) { verdict = "different"; score = Math.min(score, 29); }
+    else if (!st) { verdict = "related"; score = Math.max(30, Math.min(score, 59)); }
+    else if (!so) { verdict = "similar"; score = Math.max(60, Math.min(score, 84)); }
+    else { verdict = "same"; score = Math.max(85, score); }
+    byId[cand.id] = { verdict, score, reason: String(r.reason || ""), checks: { type: t, heel: hl, style: st, sole: so } };
   });
   aiCache.set(cacheKey, byId);
   return candidates.map((c) => ({ ...c, ai: byId[c.id] }));
+}
+
+// Checks up to 16 candidates: two batches of 8 asked in parallel.
+async function verifyWithGemini(candidates) {
+  const chunks = [];
+  for (let i = 0; i < candidates.length; i += 8) chunks.push(candidates.slice(i, i + 8));
+  const done = await Promise.all(chunks.map((c) => verifyChunk(c)));
+  return done.flat();
 }
 
 // ============================================================
@@ -1808,274 +1826,3 @@ async function listSheets(zip) {
   return [...wb.getElementsByTagName("sheet")].map((sh) => {
     const t = targets[sh.getAttributeNS(REL, "id")] || "";
     return {
-      name: sh.getAttribute("name"),
-      hidden: ["hidden", "veryHidden"].includes(sh.getAttribute("state")),
-      path: "xl/" + t.replace(/^\/?(xl\/)?/, ""),
-    };
-  });
-}
-
-// SheetJS's own zip reader breaks on some files ("Bad compressed size").
-// JSZip is more forgiving, so we open the file with JSZip and re-pack only
-// what's needed (no photos, no hidden sheets) into a clean zip for SheetJS.
-async function readWorkbookRobust(XLSX, JSZip, zip, sheets) {
-  const skip = new Set();
-  sheets.filter((s) => s.hidden).forEach((s) => {
-    skip.add(s.path);
-    skip.add(s.path.replace("worksheets/", "worksheets/_rels/") + ".rels");
-  });
-  const clean = new JSZip();
-  for (const [path, entry] of Object.entries(zip.files)) {
-    if (entry.dir) continue;
-    if (skip.has(path)) continue;
-    if (/^xl\/(media|drawings|printerSettings|richData|embeddings)\//.test(path)) continue;
-    clean.file(path, await entry.async("uint8array"));
-  }
-  const out = await clean.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-  return XLSX.read(out, { type: "array", cellNF: true, sheets: sheets.filter((s) => !s.hidden).map((s) => s.name) });
-}
-
-
-function pickImageForRow(images, row0) {
-  const im = (images || []).find((x) => x.row === row0 && x.col >= 3 && x.col <= 7);
-  return im ? `data:image/${im.ext === "jpg" ? "jpeg" : im.ext};base64,${im.base64}` : null;
-}
-// ---- PARSER END ----
-
-// ---- Review step: labels the app does not know yet --------------------------------
-const MAP_TARGET_FIELDS = [
-  ["costing", "Customer"], ["costing", "Brand"], ["costing", "Types of Shoe"], ["costing", "Stage"], ["costing", "Size Range"], ["costing", "Gender"],
-  ["costing", "Order Qty"], ["costing", "Order Status"], ["construction", "Construction"], ["construction", "Outsole"], ["construction", "Upper Material"],
-  ["efficiency", "Assembly OWE"], ["efficiency", "Assembly Manpower (D)"], ["efficiency", "Target Output/HR Avg (Assembly)"], ["efficiency", "Highest Possible Output/HR"],
-  ["efficiency", "Stitching OWE"], ["efficiency", "Stitching Manpower (D)"], ["efficiency", "Target Output/HR Avg (Sewing)"],
-  ["notes", "Special Note"], ["notes", "Tech. Data"], ["notes", "Physical Sample"], ["notes", "Sample Autopsy"], ["notes", "Recommendation"],
-];
-const decKey = (n) => encodeURIComponent(n).replace(/\./g, "%2E");
-async function loadSavedDecisions() {
-  try {
-    const snap = await getDoc(doc(db, "config", "importMap"));
-    const raw = snap.exists() ? snap.data().decisions || {} : {};
-    return Object.fromEntries(Object.entries(raw).map(([k, v]) => [decodeURIComponent(k), v]));
-  } catch (_) { return {}; }
-}
-async function saveDecisions(newOnes) {
-  if (!Object.keys(newOnes).length) return;
-  try {
-    await setDoc(doc(db, "config", "importMap"), { decisions: Object.fromEntries(Object.entries(newOnes).map(([k, v]) => [decKey(k), v])) }, { merge: true });
-  } catch (err) { console.warn("Could not save import answers:", err); }
-}
-
-// Shows the unknown labels and resolves with {label: decision}. Nothing is imported before the user answers.
-function askAboutNewLabels(unknownList) {
-  return new Promise((resolve) => {
-    const box = document.getElementById("import-review");
-    box.innerHTML = `<p class="section-label">New labels found in this file</p>
-      <p class="muted" style="font-size:13px;margin:0 0 12px;">These names are not in the app yet. For each one choose: <strong>Keep</strong> (it becomes a new item on every card that has it), <strong>Map</strong> to something the app already has, or <strong>Skip</strong>. Your answers are remembered for the next file.</p>`;
-    const rows = [];
-    unknownList.forEach((u) => {
-      const row = document.createElement("div");
-      row.className = "review-row";
-      const sel = document.createElement("select");
-      const opt = (v, t, parent) => { const o = document.createElement("option"); o.value = v; o.textContent = t; (parent || sel).appendChild(o); };
-      opt("keep", u.region === "op" && u.numeric ? "Keep as a new operation (minutes)" : "Keep as a new item (shown under “Other details”)");
-      opt("skip", "Skip — do not import");
-      const g1 = document.createElement("optgroup"); g1.label = "Map to a Business SOT operation";
-      BUSINESS_SOT_OPERATIONS.forEach((op) => opt("op:" + op, op, g1)); sel.appendChild(g1);
-      const g2 = document.createElement("optgroup"); g2.label = "Map to an info field";
-      MAP_TARGET_FIELDS.forEach(([g, k]) => opt(`field:${g}|${k}`, k, g2)); sel.appendChild(g2);
-      row.innerHTML = `<div><strong>${esc(u.label)}</strong><div class="muted" style="font-size:12px;">${u.count} row${u.count === 1 ? "" : "s"} have a value${u.samples.length ? ", e.g. " + esc(u.samples.join(", ")) : ""} · ${u.region === "op" ? "among the operations" : "among the info fields"}</div></div>`;
-      row.appendChild(sel);
-      box.appendChild(row);
-      rows.push([u.n, sel]);
-    });
-    const go = document.createElement("button");
-    go.className = "btn btn-primary"; go.type = "button"; go.style.marginTop = "12px"; go.textContent = "Apply and continue";
-    go.onclick = () => {
-      box.hidden = true; box.innerHTML = "";
-      resolve(Object.fromEntries(rows.map(([n, sel]) => [n, sel.value])));
-    };
-    box.appendChild(go);
-    box.hidden = false;
-  });
-}
-
-let importQueue = []; // [{article, construction, costing, businessSOT, efficiency, notes, extra, imageDataUrl}]
-
-document.getElementById("import-file").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const statusBox = document.getElementById("import-status");
-  statusBox.hidden = false; statusBox.textContent = "Reading workbook…";
-  document.getElementById("import-review").hidden = true;
-  document.getElementById("import-preview").innerHTML = "";
-  document.getElementById("import-confirm-btn").style.display = "none";
-
-  try {
-    const [{ default: JSZip }, XLSX] = await Promise.all([
-      import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm"),
-      import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm"),
-    ]);
-    const buf = await file.arrayBuffer();
-    const zip = await JSZip.loadAsync(buf);
-    const sheets = await listSheets(zip);
-    const workbook = await readWorkbookRobust(XLSX, JSZip, zip, sheets);
-
-    // Photos are optional: if they can't be read, still import the data.
-    let imagesBySheet = {};
-    try {
-      statusBox.textContent = "Reading photos…";
-      imagesBySheet = await extractSheetImages(zip);
-    } catch (imgErr) {
-      console.warn("Could not read photos from workbook:", imgErr);
-    }
-
-    // 1) read every visible sheet; each layout is recognised automatically
-    const ctx = { known: new Set(), unknown: new Map() };
-    const unrecognised = [];
-    importQueue = [];
-    for (const { name: sheetName, hidden } of sheets) {
-      if (hidden || !workbook.Sheets[sheetName]) continue; // never read hidden sheets
-      const sheet = workbook.Sheets[sheetName];
-      const cards = parseCardSheet(XLSX, sheet, ctx);
-      if (cards.length) { cards.forEach((a) => importQueue.push({ ...a, imageDataUrl: pickImageForArticle(imagesBySheet[sheetName], a.col) })); continue; }
-      const table = parseTableSheet(XLSX, sheet, ctx);
-      if (table.length) { table.forEach((a) => importQueue.push({ ...a, imageDataUrl: pickImageForRow(imagesBySheet[sheetName], a.anchorRow) })); continue; }
-      if (sheet["!ref"] && !(sheet["A1"] && ARTICLE_LABELS.includes(normLabel(sheet["A1"].v)))) unrecognised.push(sheetName);
-    }
-
-    // 2) labels the app has never seen: use remembered answers, ask about the rest
-    const saved = await loadSavedDecisions();
-    const unknownList = [...ctx.unknown.entries()].map(([n, u]) => ({ ...u, n }));
-    const toAsk = unknownList.filter((u) => !saved[u.n]);
-    let answers = {};
-    if (toAsk.length) {
-      statusBox.textContent = `${ctx.known.size} labels recognised, ${toAsk.length} new — please decide below.`;
-      answers = await askAboutNewLabels(toAsk);
-      await saveDecisions(answers);
-    }
-    const decisions = { ...saved, ...answers };
-    const stats = applyDecisions(importQueue, decisions);
-
-    // 3) rows imported in an earlier run are skipped (table layout)
-    if (importQueue.some((r) => r.importKey)) {
-      statusBox.textContent = "Checking which rows were imported before…";
-      const done = new Set();
-      (await getDocs(collection(db, "sots"))).forEach((d) => { if (d.data().importKey) done.add(d.data().importKey); });
-      importQueue.forEach((r) => { if (r.importKey && done.has(r.importKey)) r.skip = true; });
-    }
-    const withPhoto = importQueue.filter((r) => r.imageDataUrl).length;
-    const skipped = importQueue.filter((r) => r.skip).length;
-    const auto = importQueue.filter((r) => r.autoNamed).length;
-    const dupNames = importQueue.length - new Set(importQueue.map((r) => r.article)).size;
-    // articles already in the database (and not skipped) will be saved as a NEW VERSION of the existing card
-    const existing = new Set((await getAllLatestSots()).map((d) => String(d.article).trim().toLowerCase()));
-    const willVersion = importQueue.filter((r) => !r.skip && existing.has(String(r.article).trim().toLowerCase())).length;
-    statusBox.textContent = `Found ${importQueue.length} entr${importQueue.length === 1 ? "y" : "ies"} (${withPhoto} with photo). ` +
-      `Labels: ${ctx.known.size} matched automatically, ${stats.kept.size} new kept, ${stats.mapped.size} mapped, ${stats.skipped.size} skipped.` +
-      (auto ? ` ${auto} had no article number and got an automatic name.` : "") +
-      (dupNames ? ` ⚠ ${dupNames} repeat an article number inside this file (saved as versions of each other).` : "") +
-      (willVersion ? ` ⚠ ${willVersion} article(s) already exist in the database and will be saved as a NEW VERSION (the old card stays as history).` : "") +
-      (skipped ? ` ${skipped} already imported earlier (will be skipped).` : "") +
-      (unrecognised.length ? ` Not recognised and left out: sheet ${unrecognised.map((n) => "“" + n + "”").join(", ")} (no article header found).` : "") +
-      " Review below, then confirm.";
-    renderImportPreview();
-    document.getElementById("import-confirm-btn").style.display = importQueue.length ? "inline-block" : "none";
-  } catch (err) {
-    statusBox.textContent = "Couldn't read that file: " + err.message;
-  }
-});
-
-const IMPORT_PREVIEW_LIMIT = 80;
-function renderImportPreview() {
-  const box = document.getElementById("import-preview");
-  box.innerHTML = "";
-  importQueue.slice(0, IMPORT_PREVIEW_LIMIT).forEach((row, i) => {
-    const ops = Object.keys(row.businessSOT || {}).length;
-    const total = Object.values(row.businessSOT || {}).reduce((a, b) => a + Number(b), 0);
-    const effCount = Object.keys(row.efficiency || {}).length;
-    const noteCount = Object.keys(row.notes || {}).length;
-    const line1 = [row.construction.Construction, row.construction.Outsole, row.costing["Types of Shoe"], row.costing.Customer, row.costing.Brand].filter(Boolean).join(" · ") || "—";
-    const line2 = `Business SOT: ${ops} ops, total ${Math.round(total * 100) / 100} min · Efficiency: ${effCount}/7 · Notes: ${noteCount}`;
-    const div = document.createElement("div");
-    div.className = "import-row";
-    div.innerHTML = `
-      ${row.imageDataUrl ? `<img src="${row.imageDataUrl}" />` : `<div class="muted" style="width:56px;height:56px;display:flex;align-items:center;justify-content:center;font-size:10px;border:1px dashed #cdbfa8;border-radius:6px;">no photo</div>`}
-      <div><strong>${esc(row.article)}</strong>${row.autoNamed ? ' <span class="muted" style="font-size:11px;">(auto name)</span>' : ""}<div class="muted" style="font-size:12px;">${esc(line1)}</div><div class="muted" style="font-size:12px;">${line2}</div></div>
-      <span class="status" id="import-status-${i}">${row.skip ? "already imported" : "ready"}</span>`;
-    box.appendChild(div);
-  });
-  if (importQueue.length > IMPORT_PREVIEW_LIMIT) {
-    const more = document.createElement("p");
-    more.className = "muted"; more.style.fontSize = "13px";
-    more.textContent = `…and ${importQueue.length - IMPORT_PREVIEW_LIMIT} more rows (all of them are imported when you confirm).`;
-    box.appendChild(more);
-  }
-}
-
-// Photo upload + AI embedding for up to 3 rows at the same time; saving to the database
-// happens strictly in file order (so repeated article numbers become versions in order).
-document.getElementById("import-confirm-btn").addEventListener("click", async () => {
-  const btn = document.getElementById("import-confirm-btn");
-  const statusBox = document.getElementById("import-status");
-  btn.disabled = true;
-  const setRow = (i, t) => { const el = document.getElementById(`import-status-${i}`); if (el) el.textContent = t; };
-  const todo = importQueue.map((row, i) => ({ row, i })).filter((x) => !x.row.skip);
-
-  let running = 0; const waiting = [];
-  const limit = async (fn) => {
-    while (running >= 3) await new Promise((r) => waiting.push(r));
-    running++;
-    try { return await fn(); } finally { running--; waiting.shift()?.(); }
-  };
-  const prep = new Map();
-  todo.forEach(({ row, i }) => {
-    prep.set(i, limit(async () => {
-      setRow(i, "uploading photo…");
-      const photoUrl = row.imageDataUrl ? await uploadToCloudinary(dataUrlToFile(row.imageDataUrl, `${row.article}.jpg`)) : "";
-      setRow(i, "embedding…");
-      const embedding = photoUrl ? await embedImage(photoUrl) : new Array(512).fill(0);
-      return { photoUrl, embedding };
-    }));
-    prep.get(i).catch(() => {}); // errors are handled below, in order
-  });
-
-  let ok = 0, failed = 0;
-  for (let n = 0; n < todo.length; n++) {
-    const { row, i } = todo[n];
-    statusBox.textContent = `Importing… ${n} of ${todo.length} done` + (failed ? `, ${failed} failed` : "") + ". Keep this tab open.";
-    try {
-      const { photoUrl, embedding } = await prep.get(i);
-      setRow(i, "saving…");
-      const isNewVersion = await saveSotWithVersioning({
-        article: row.article,
-        construction: row.construction,
-        costing: row.costing,
-        businessSOT: row.businessSOT || {},
-        efficiency: row.efficiency || {},
-        notes: row.notes || {},
-        extra: row.extra || {},
-        ...(row.importKey ? { importKey: row.importKey } : {}),
-        photoUrl,
-        embedding,
-      });
-      setRow(i, isNewVersion ? "saved (new version)" : "saved");
-      ok++;
-    } catch (err) {
-      setRow(i, "failed: " + err.message);
-      failed++;
-    }
-  }
-  btn.disabled = false;
-  if (ok) logAudit("imported", "", `${ok} saved, ${failed} failed`);
-  statusBox.textContent = `Import finished: ${ok} saved` + (failed ? `, ${failed} failed (upload the same file again — rows already saved are skipped)` : "") + ".";
-  invalidateSotCache();
-});
-
-function dataUrlToFile(dataUrl, filename) {
-  const [meta, base64] = dataUrl.split(",");
-  const mime = meta.match(/data:(.*);base64/)[1];
-  const bin = atob(base64);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return new File([arr], filename, { type: mime });
-}
