@@ -293,3 +293,10 @@ button:focus-visible, .dropzone:focus-visible, .result-card:focus-visible, a:foc
 .gallery img { width: 44px; height: 34px; object-fit: cover; border-radius: 4px; border: 2px solid transparent; cursor: pointer; opacity: .75; }
 .gallery img.on { border-color: var(--accent); opacity: 1; }
 @media (max-width: 820px) { .modal-photo { width: 100%; } .cmp-top { grid-template-columns: 1fr; } .log-line { flex-direction: column; gap: 2px; } }
+
+.checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+.chk { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.chk.yes { background: var(--s-strong-bg); color: var(--s-strong); }
+.chk.no { background: var(--s-weak-bg); color: var(--s-weak); }
+.related-grid { margin-top: 10px; opacity: .85; }
+.ai-related { border-left: 3px solid #8A97A5; }
