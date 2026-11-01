@@ -6,7 +6,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
   doc, setDoc, getDoc, getDocs, collection, query, where,
-  updateDoc, deleteDoc, onSnapshot, addDoc, serverTimestamp,
+  updateDoc, deleteDoc, onSnapshot, addDoc, serverTimestamp, writeBatch, orderBy, limit, Timestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 // The AI model that turns a photo into a vector, running fully in the
@@ -175,6 +175,33 @@ onAuthStateChanged(auth, async (user) => {
   if (canManageUsers(currentProfile.role)) watchUsers();
 });
 
+// ---- Dark mode (remembered in this browser) + "/" shortcut ----
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  const b = document.getElementById("theme-btn");
+  if (b) b.textContent = t === "dark" ? "Light mode" : "Dark mode";
+}
+(function initTheme() {
+  let t = null;
+  try { t = localStorage.getItem("sot-theme"); } catch (_) {}
+  if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  applyTheme(t);
+  document.getElementById("theme-btn").addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next);
+    try { localStorage.setItem("sot-theme", next); } catch (_) {}
+  });
+})();
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (["input", "textarea", "select"].includes(tag) || e.target.isContentEditable) return;
+  if (document.getElementById("screen-app").hidden) return;
+  e.preventDefault();
+  document.querySelector('.nav-item[data-tab="tab-search"]').click();
+  document.getElementById("article-input").focus();
+});
+
 // Warm up the AI model in the background so the first image match is quick.
 function prewarmModel() { (window.requestIdleCallback || ((f) => setTimeout(f, 2500)))(() => { getEmbedder().catch(() => {}); }); }
 
@@ -182,6 +209,7 @@ function applyRoleToUI(role) {
   document.getElementById("nav-upload").hidden = !canUpload(role);
   document.getElementById("nav-import").hidden = !canUpload(role);
   document.getElementById("nav-users").hidden = !canManageUsers(role);
+  document.getElementById("nav-activity").hidden = !canManageUsers(role);
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -193,6 +221,8 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
     // pick up other people's changes: drop a cache older than 20 seconds when opening a list tab
     if (["tab-master", "tab-search", "tab-match"].includes(btn.dataset.tab) && Date.now() - sotCacheAt > 20000) sotCache = null;
     if (btn.dataset.tab === "tab-master") renderMaster().catch(() => {});
+    if (btn.dataset.tab === "tab-activity") renderActivity();
+    if (btn.dataset.tab === "tab-insights") renderInsights().catch(() => {});
     if (btn.dataset.tab === "tab-upload" && (editingId || matchFlow || document.getElementById("add-mode-banner").style.display === "block")) {
       exitEditMode();
       document.getElementById("form-add-sot").reset();
@@ -287,6 +317,46 @@ async function getAllLatestSots() {
     renderBuyerFilters();
   }
   return sotCache;
+}
+
+// ---- Audit log + recycle bin helpers ----
+async function logAudit(action, article, detail = "") {
+  try {
+    await addDoc(collection(db, "auditLog"), {
+      at: serverTimestamp(), uid: currentUser.uid, name: currentProfile?.name || currentUser.email || "",
+      action, article: article || "", detail: String(detail || "").slice(0, 300),
+    });
+  } catch (_) { /* logging is best-effort */ }
+}
+async function getAllSotDocs() { // every version, not just the latest
+  const snap = await getDocs(collection(db, "sots"));
+  const list = []; snap.forEach((d) => list.push({ ...d.data(), id: d.id }));
+  return list;
+}
+// Moves SOT docs to the recycle bin (kept 30 days), 200 at a time.
+async function moveToTrash(docs) {
+  const who = currentProfile?.name || currentUser.email || "";
+  for (let i = 0; i < docs.length; i += 200) {
+    const b = writeBatch(db);
+    docs.slice(i, i + 200).forEach((d) => {
+      const { id, ...data } = d;
+      b.set(doc(collection(db, "trash")), { ...data, origId: id, deletedAt: serverTimestamp(), deletedBy: who });
+      b.delete(doc(db, "sots", id));
+    });
+    await b.commit();
+  }
+}
+// After deleting, every article that still has versions must have exactly one latest.
+async function fixLatestFlags(remaining, articles) {
+  const byArticle = new Map();
+  remaining.forEach((d) => { if (articles.has(d.article)) { if (!byArticle.has(d.article)) byArticle.set(d.article, []); byArticle.get(d.article).push(d); } });
+  const b = writeBatch(db); let n = 0;
+  byArticle.forEach((list) => {
+    if (list.some((d) => d.isLatest)) return;
+    list.sort((a, b2) => (b2.year || 0) - (a.year || 0) || (b2.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    b.update(doc(db, "sots", list[0].id), { isLatest: true }); n++;
+  });
+  if (n) await b.commit();
 }
 
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
@@ -400,7 +470,7 @@ async function renderMatchResults() {
   const all = await getAllLatestSots();
   const scored = all
     .filter((d) => d.embedding && d.photoUrl && passesBuyerFilter(d))
-    .map((d) => ({ ...d, score: cosineSimilarity(lastQueryVector, d.embedding) }))
+    .map((d) => ({ ...d, score: Math.max(cosineSimilarity(lastQueryVector, d.embedding), ...(d.extraPhotos || []).map((p) => cosineSimilarity(lastQueryVector, p.embedding || []))) }))
     .sort((a, b) => b.score - a.score);
   if (scored.length === 0) {
     document.getElementById("match-actions").hidden = !canUpload(currentProfile.role);
@@ -623,7 +693,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") lightbox.h
 // ============================================================
 // Master table tab — like the SOT Master File: one row per article
 // ============================================================
-const master = { sortKey: "article", dir: 1, shown: 100 };
+const master = { sortKey: "article", dir: 1, shown: 100, selected: new Set(), filtered: [] };
 const natCmp = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
 async function renderMaster() {
   const all = await getAllLatestSots();
@@ -650,9 +720,13 @@ async function renderMaster() {
     .filter((op) => items.some((it) => Number(it.businessSOT?.[op]) > 0)) : [];
   const cols = [["", "S/L"], ["customer", "Customer"], ["brand", "Brand"], ["category", "Category"], ["article", "Article"], ["", "Picture"], ["sot", "SOT"]];
   const arrow = (k) => (k && k === master.sortKey ? (master.dir > 0 ? " ▲" : " ▼") : "");
-  const head = cols.map(([k, l]) => `<th ${k ? `class="sortable" data-sort="${k}"` : ""}>${l}${arrow(k)}</th>`).join("") + opCols.map((op) => `<th class="op-col">${esc(op)}</th>`).join("");
+  master.filtered = items;
+  const allTicked = items.length > 0 && items.every((it) => master.selected.has(it.id));
+  const head = `<th class="chk-col"><input type="checkbox" id="master-all" aria-label="Select all" ${allTicked ? "checked" : ""} /></th>` +
+    cols.map(([k, l]) => `<th ${k ? `class="sortable" data-sort="${k}"` : ""}>${l}${arrow(k)}</th>`).join("") + opCols.map((op) => `<th class="op-col">${esc(op)}</th>`).join("");
   const rows = items.slice(0, master.shown);
-  const body = rows.map((it, i) => `<tr data-i="${i}">
+  const body = rows.map((it, i) => `<tr data-i="${i}" class="${master.selected.has(it.id) ? "picked" : ""}">
+    <td class="chk-col"><input type="checkbox" class="row-chk" ${master.selected.has(it.id) ? "checked" : ""} aria-label="Select ${esc(it.article)}" /></td>
     <td>${i + 1}</td><td>${esc(getters.customer(it))}</td><td>${esc(brandOf(it))}</td><td>${esc(categoryOf(it))}</td>
     <td><strong>${esc(it.article)}</strong></td>
     <td>${it.photoUrl ? `<img class="master-thumb" loading="lazy" src="${esc(it.photoUrl.replace("/upload/", "/upload/w_120,c_limit,q_auto/"))}" />` : ""}</td>
@@ -663,10 +737,124 @@ async function renderMaster() {
   table.querySelectorAll("th.sortable").forEach((th) => th.addEventListener("click", () => {
     const k = th.dataset.sort; master.dir = master.sortKey === k ? -master.dir : 1; master.sortKey = k; renderMaster();
   }));
-  table.querySelectorAll("tbody tr").forEach((tr) => tr.addEventListener("click", () => { matchFlow = false; openModal(rows[Number(tr.dataset.i)]); }));
+  table.querySelectorAll("tbody tr").forEach((tr) => tr.addEventListener("click", (e) => {
+    if (e.target.closest(".chk-col")) return;
+    matchFlow = false; openModal(rows[Number(tr.dataset.i)]);
+  }));
+  table.querySelectorAll(".row-chk").forEach((cb) => cb.addEventListener("change", () => {
+    const it = rows[Number(cb.closest("tr").dataset.i)];
+    cb.checked ? master.selected.add(it.id) : master.selected.delete(it.id);
+    cb.closest("tr").classList.toggle("picked", cb.checked);
+    updateMasterToolbar();
+  }));
+  document.getElementById("master-all").addEventListener("change", (e) => {
+    master.filtered.forEach((it) => (e.target.checked ? master.selected.add(it.id) : master.selected.delete(it.id)));
+    renderMaster();
+  });
+  updateMasterToolbar();
   document.getElementById("master-count").textContent = `${items.length} article${items.length === 1 ? "" : "s"}` + (items.length > rows.length ? ` — showing first ${rows.length}` : "");
   document.getElementById("master-more").hidden = items.length <= rows.length;
 }
+// ---- Selection toolbar: compare, export, bulk edit, bulk delete ----
+function selectedItems() { const ids = master.selected; return (sotCache || []).filter((it) => ids.has(it.id)); }
+function updateMasterToolbar() {
+  const n = master.selected.size;
+  const bar = document.getElementById("master-selbar");
+  bar.hidden = n === 0;
+  document.getElementById("sel-count").textContent = `${n} selected`;
+  document.getElementById("sel-compare").disabled = n !== 2;
+  document.getElementById("sel-compare").title = n === 2 ? "" : "Select exactly 2 articles to compare";
+  document.getElementById("sel-edit").hidden = !canUpload(currentProfile.role);
+  document.getElementById("sel-delete").hidden = !canManageUsers(currentProfile.role);
+  document.getElementById("master-export").textContent = n ? `Export ${n} to Excel` : "Export to Excel";
+}
+document.getElementById("sel-clear").addEventListener("click", () => { master.selected.clear(); renderMaster(); });
+
+async function exportMaster() {
+  const btn = document.getElementById("master-export");
+  const list = master.selected.size ? selectedItems() : master.filtered;
+  if (!list.length) return;
+  btn.disabled = true;
+  try {
+    const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+    const X = XLSX.default || XLSX;
+    const ops = [...new Set([...BUSINESS_SOT_OPERATIONS, ...list.flatMap((it) => Object.keys(it.businessSOT || {}))])]
+      .filter((op) => list.some((it) => Number(it.businessSOT?.[op]) > 0));
+    const aoa = [["S/L", "CUSTOMER", "BRAND", "CATEGORY", "ARTICLE", "SOT", ...ops.map((o) => o.toUpperCase())]];
+    list.forEach((it, i) => aoa.push([i + 1, it.costing?.Customer || "", brandOf(it), categoryOf(it), it.article,
+      Math.round(totalMinutes(it.businessSOT) * 100) / 100, ...ops.map((op) => (Number(it.businessSOT?.[op]) > 0 ? it.businessSOT[op] : ""))]));
+    const wb = X.utils.book_new();
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(aoa), "SOT");
+    X.writeFile(wb, `SOT-export-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    logAudit("exported", "", `${list.length} article(s)`);
+  } catch (err) { alert("Could not export: " + err.message); }
+  btn.disabled = false;
+}
+document.getElementById("master-export").addEventListener("click", exportMaster);
+
+function openCompare() {
+  const [a, b] = selectedItems();
+  if (!a || !b) return;
+  const ops = [...new Set([...BUSINESS_SOT_OPERATIONS, ...Object.keys(a.businessSOT || {}), ...Object.keys(b.businessSOT || {})])]
+    .filter((op) => Number(a.businessSOT?.[op]) > 0 || Number(b.businessSOT?.[op]) > 0);
+  const num = (v) => (Number(v) > 0 ? Number(v) : 0);
+  const side = (it) => `<div class="cmp-head">${it.photoUrl ? `<img src="${esc(it.photoUrl)}" />` : ""}<div><strong>${esc(it.article)}</strong><div class="muted">${esc([it.costing?.Customer, brandOf(it), categoryOf(it)].filter(Boolean).join(" · "))}</div></div></div>`;
+  const rows = ops.map((op) => {
+    const x = num(a.businessSOT?.[op]), y = num(b.businessSOT?.[op]), d = Math.round((y - x) * 100) / 100;
+    return `<tr class="${d ? "cmp-diff" : ""}"><td>${esc(op)}</td><td>${x || ""}</td><td>${y || ""}</td><td>${d ? (d > 0 ? "+" : "") + d : "same"}</td></tr>`;
+  }).join("");
+  const ta = Math.round(totalMinutes(a.businessSOT) * 100) / 100, tb = Math.round(totalMinutes(b.businessSOT) * 100) / 100, td = Math.round((tb - ta) * 100) / 100;
+  document.getElementById("compare-body").innerHTML = `
+    <div class="cmp-top">${side(a)}${side(b)}</div>
+    <table class="sot-table cmp-table"><tr><th>Operation</th><th>${esc(a.article)}</th><th>${esc(b.article)}</th><th>Difference</th></tr>${rows}
+    <tr class="total"><td>Total</td><td>${ta}</td><td>${tb}</td><td>${td > 0 ? "+" : ""}${td}</td></tr></table>
+    <p class="muted" style="margin-top:10px;">Difference = second minus first. Highlighted rows differ.</p>`;
+  document.getElementById("compare-backdrop").hidden = false;
+}
+document.getElementById("sel-compare").addEventListener("click", openCompare);
+document.getElementById("compare-close").addEventListener("click", () => (document.getElementById("compare-backdrop").hidden = true));
+document.getElementById("compare-backdrop").addEventListener("click", (e) => { if (e.target.id === "compare-backdrop") e.target.hidden = true; });
+
+document.getElementById("sel-edit").addEventListener("click", () => { document.getElementById("bulk-panel").hidden = !document.getElementById("bulk-panel").hidden; });
+document.getElementById("bulk-apply").addEventListener("click", async () => {
+  if (!canUpload(currentProfile.role)) return;
+  const field = document.getElementById("bulk-field").value;
+  const value = document.getElementById("bulk-value").value.trim();
+  const ids = [...master.selected];
+  if (!ids.length) return;
+  if (!value && !confirm(`Clear ${field} on ${ids.length} article(s)?`)) return;
+  if (value && !confirm(`Set ${field} to “${value}” on ${ids.length} article(s)?`)) return;
+  const btn = document.getElementById("bulk-apply"); btn.disabled = true;
+  try {
+    for (let i = 0; i < ids.length; i += 400) {
+      const b = writeBatch(db);
+      ids.slice(i, i + 400).forEach((id) => b.update(doc(db, "sots", id), { [`costing.${field}`]: value }));
+      await b.commit();
+    }
+    await logAudit("bulk edit", "", `${field} = “${value}” on ${ids.length} article(s)`);
+    document.getElementById("bulk-panel").hidden = true; document.getElementById("bulk-value").value = "";
+    invalidateSotCache();
+  } catch (err) { alert("Could not update: " + err.message); }
+  btn.disabled = false;
+});
+document.getElementById("sel-delete").addEventListener("click", async () => {
+  if (!canManageUsers(currentProfile.role)) return;
+  const chosen = selectedItems();
+  if (!chosen.length) return;
+  if (!confirm(`Delete ${chosen.length} article(s) with all their versions?\nThey go to the recycle bin for 30 days.`)) return;
+  const btn = document.getElementById("sel-delete"); btn.disabled = true;
+  try {
+    const arts = new Set(chosen.map((c) => c.article));
+    const all = await getAllSotDocs();
+    const mine = all.filter((d) => arts.has(d.article));
+    await moveToTrash(mine);
+    await logAudit("bulk deleted", "", `${arts.size} article(s), ${mine.length} version(s)`);
+    master.selected.clear();
+    invalidateSotCache();
+  } catch (err) { alert("Could not delete: " + err.message); }
+  btn.disabled = false;
+});
+
 ["master-search"].forEach((id) => document.getElementById(id).addEventListener("input", () => { master.shown = 100; renderMaster(); }));
 ["master-customer", "master-brand", "master-category", "master-ops"].forEach((id) => document.getElementById(id).addEventListener("change", () => { master.shown = 100; renderMaster(); }));
 document.getElementById("master-more").addEventListener("click", () => { master.shown += 200; renderMaster(); });
@@ -745,6 +933,7 @@ function collectAddForm() {
   };
 }
 
+const removedExtra = new Set(); // extra photos the user crossed out while editing
 let baseItem = null; // the entry being edited / versioned, so fields the form has no box for are not lost
 let editingId = null; // set when the Add form is being used to edit an existing doc, instead of creating one
 
@@ -757,6 +946,14 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
   try {
     const formData = collectAddForm();
     if (baseItem) ["construction", "costing", "efficiency", "notes", "extra"].forEach((k) => { formData[k] = { ...(baseItem[k] || {}), ...formData[k] }; });
+    // extra photos: keep the ones not removed, add the newly chosen ones
+    const extraFiles = [...document.getElementById("add-photos-extra").files];
+    formData.extraPhotos = (baseItem?.extraPhotos || []).filter((p) => !removedExtra.has(p.url));
+    for (let i = 0; i < extraFiles.length; i++) {
+      statusBox.textContent = `Uploading extra photo ${i + 1} of ${extraFiles.length}…`;
+      const url = await uploadToCloudinary(extraFiles[i]);
+      formData.extraPhotos.push({ url, embedding: await embedImage(url) });
+    }
 
     if (editingId) {
       // Editing in place: only touch the photo/embedding if a new photo was chosen.
@@ -769,6 +966,7 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
         update.embedding = await embedImage(update.photoUrl);
       }
       await updateDoc(doc(db, "sots", editingId), update);
+      logAudit("edited", formData.article);
       invalidateSotCache();
       statusBox.textContent = "Entry updated.";
       exitEditMode();
@@ -779,6 +977,7 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
       const embedding = await embedImage(photoUrl);
       statusBox.textContent = "Saving…";
       const isNewVersion = await saveSotWithVersioning({ ...formData, photoUrl, embedding });
+      logAudit(isNewVersion ? "new version" : "added", formData.article);
       statusBox.textContent = isNewVersion
         ? `Saved as a new version of ${formData.article}. Previous data kept as history.`
         : "Saved.";
@@ -793,7 +992,21 @@ document.getElementById("form-add-sot").addEventListener("submit", async (e) => 
 });
 
 // ---- Add-form modes: update in place / new version / brand-new entry ----
+function renderExtraPhotoList() {
+  const box = document.getElementById("extra-photo-list");
+  box.innerHTML = "";
+  (baseItem?.extraPhotos || []).forEach((p) => {
+    const gone = removedExtra.has(p.url);
+    const d = document.createElement("div");
+    d.className = "extra-thumb" + (gone ? " gone" : "");
+    d.innerHTML = `<img src="${esc(p.url.replace("/upload/", "/upload/w_160,c_limit,q_auto/"))}" /><button type="button" title="${gone ? "Keep" : "Remove"}">${gone ? "↺" : "✕"}</button>`;
+    d.querySelector("button").addEventListener("click", () => { gone ? removedExtra.delete(p.url) : removedExtra.add(p.url); renderExtraPhotoList(); });
+    box.appendChild(d);
+  });
+}
 function fillAddForm(item) {
+  removedExtra.clear();
+  setTimeout(renderExtraPhotoList, 0);
   document.getElementById("add-article").value = item.article || "";
   document.getElementById("add-customer").value = item.costing?.Customer || "";
   document.getElementById("add-brand").value = item.costing?.Brand || "";
@@ -891,7 +1104,7 @@ function enterNewEntryMode() {
 document.getElementById("match-new-btn").addEventListener("click", enterNewEntryMode);
 
 function exitEditMode() {
-  editingId = null; baseItem = null;
+  editingId = null; baseItem = null; removedExtra.clear(); renderExtraPhotoList();
   matchFlow = false;
   document.getElementById("add-photo").required = true;
   setSubmitLabel("Save entry");
@@ -904,29 +1117,27 @@ function exitEditMode() {
 // notes, and other versions of the same article
 // ============================================================
 const backdrop = document.getElementById("modal-backdrop");
-// ---- Delete (Master / Master God only; Firestore rules enforce this too) ----
+// ---- Delete (Master / Master God only; goes to the recycle bin for 30 days) ----
 async function deleteSotVersion(item) {
   if (!canManageUsers(currentProfile.role)) return;
-  if (!confirm(`Delete SOT ${item.article}${item.year ? " (" + item.year + ")" : ""}?\nThis cannot be undone.`)) return;
+  if (!confirm(`Delete SOT ${item.article}${item.year ? " (" + item.year + ")" : ""}?\nIt goes to the recycle bin for 30 days.`)) return;
   try {
-    await deleteDoc(doc(db, "sots", item.id));
-    if (item.isLatest) {
-      // promote the newest remaining version of this article, so the article does not vanish from search
-      const rest = await getDocs(query(collection(db, "sots"), where("article", "==", item.article)));
-      const list = []; rest.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      list.sort((a, b) => (b.year || 0) - (a.year || 0) || (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      if (list[0]) await updateDoc(doc(db, "sots", list[0].id), { isLatest: true });
-    }
+    const all = await getAllSotDocs();
+    await moveToTrash(all.filter((d) => d.id === item.id));
+    await fixLatestFlags(all.filter((d) => d.id !== item.id), new Set([item.article]));
+    await logAudit("deleted", item.article, item.year ? "version " + item.year : "");
     backdrop.hidden = true;
     invalidateSotCache();
   } catch (err) { alert("Could not delete: " + err.message); }
 }
 async function deleteSotArticle(item) {
   if (!canManageUsers(currentProfile.role)) return;
-  if (!confirm(`Delete article ${item.article} with ALL its versions?\nThis cannot be undone.`)) return;
+  if (!confirm(`Delete article ${item.article} with ALL its versions?\nThey go to the recycle bin for 30 days.`)) return;
   try {
-    const all = await getDocs(query(collection(db, "sots"), where("article", "==", item.article)));
-    for (const d of all.docs) await deleteDoc(doc(db, "sots", d.id));
+    const all = await getAllSotDocs();
+    const mine = all.filter((d) => d.article === item.article);
+    await moveToTrash(mine);
+    await logAudit("deleted article", item.article, mine.length + " version(s)");
     backdrop.hidden = true;
     invalidateSotCache();
   } catch (err) { alert("Could not delete: " + err.message); }
@@ -947,6 +1158,20 @@ function kvGrid(container, obj) {
 
 async function openModal(item) {
   document.getElementById("modal-img").src = item.photoUrl || "";
+  const gal = document.getElementById("modal-gallery");
+  const pics = [item.photoUrl, ...(item.extraPhotos || []).map((p) => p.url)].filter(Boolean);
+  gal.innerHTML = "";
+  gal.hidden = pics.length < 2;
+  pics.forEach((u, i) => {
+    const im = document.createElement("img");
+    im.src = u.replace("/upload/", "/upload/w_160,c_limit,q_auto/");
+    im.className = i === 0 ? "on" : "";
+    im.addEventListener("click", () => {
+      document.getElementById("modal-img").src = u;
+      gal.querySelectorAll("img").forEach((x) => x.classList.toggle("on", x === im));
+    });
+    gal.appendChild(im);
+  });
   document.getElementById("modal-article").textContent = item.article;
   document.getElementById("modal-name").textContent = item.construction?.Construction || item.costing?.["Types of Shoe"] || "Untitled";
   const vTag = document.getElementById("modal-version");
@@ -1022,6 +1247,97 @@ async function openModal(item) {
     });
   }
   backdrop.hidden = false;
+}
+
+// ============================================================
+// Insights tab: average SOT and operation minutes per customer / brand / category
+// ============================================================
+async function renderInsights() {
+  const all = await getAllLatestSots();
+  const by = document.getElementById("ins-group").value;
+  const custSel = document.getElementById("ins-customer");
+  const custCur = custSel.value;
+  const custs = [...new Set(all.map((it) => String(it.costing?.Customer || "").trim()).filter(Boolean))].sort(natCmp);
+  custSel.innerHTML = '<option value="">All customers</option>' + custs.map((c) => `<option>${esc(c)}</option>`).join("");
+  custSel.value = custs.includes(custCur) ? custCur : "";
+  const getter = { customer: (it) => String(it.costing?.Customer || "").trim(), brand: brandOf, category: categoryOf }[by];
+  const pool = all.filter((it) => !custSel.value || String(it.costing?.Customer || "").trim() === custSel.value);
+  const groups = new Map();
+  pool.forEach((it) => { const k = getter(it) || "(not set)"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it); });
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const list = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+  const withTotal = (items) => items.map((it) => totalMinutes(it.businessSOT)).filter((t) => t > 0);
+  const label = { customer: "Customer", brand: "Brand", category: "Category" }[by];
+  document.getElementById("ins-summary").innerHTML = `<tr><th>${label}</th><th>Articles</th><th>Average SOT (min)</th><th>Lowest</th><th>Highest</th></tr>` +
+    list.map(([k, items]) => { const t = withTotal(items); return `<tr><td>${esc(k)}</td><td>${items.length}</td><td>${t.length ? r1(avg(t)) : ""}</td><td>${t.length ? r1(Math.min(...t)) : ""}</td><td>${t.length ? r1(Math.max(...t)) : ""}</td></tr>`; }).join("");
+  const ops = BUSINESS_SOT_OPERATIONS.concat([...new Set(pool.flatMap((it) => Object.keys(it.businessSOT || {})))].filter((o) => !BUSINESS_SOT_OPERATIONS.includes(o)))
+    .filter((op) => pool.some((it) => Number(it.businessSOT?.[op]) > 0));
+  document.getElementById("ins-ops").innerHTML = `<tr><th>${label}</th>${ops.map((o) => `<th class="op-col">${esc(o)}</th>`).join("")}</tr>` +
+    list.map(([k, items]) => `<tr><td>${esc(k)}</td>${ops.map((op) => {
+      const v = items.map((it) => Number(it.businessSOT?.[op])).filter((x) => x > 0);
+      return `<td class="op-col">${v.length ? r1(avg(v)) : ""}</td>`;
+    }).join("")}</tr>`).join("");
+  document.getElementById("ins-note").textContent = `${pool.length} article${pool.length === 1 ? "" : "s"}. Operation averages count only articles that use that operation.`;
+}
+["ins-group", "ins-customer"].forEach((id) => document.getElementById(id).addEventListener("change", () => renderInsights()));
+
+// ============================================================
+// Activity tab (Master / Master God): recycle bin + audit log
+// ============================================================
+const fmtWhen = (ts) => { const d = ts?.toDate ? ts.toDate() : null; return d ? d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : ""; };
+async function renderActivity() {
+  if (!canManageUsers(currentProfile.role)) return;
+  const binBox = document.getElementById("bin-list"), logBox = document.getElementById("log-list");
+  binBox.textContent = "Loading…"; logBox.textContent = "Loading…";
+  try {
+    const trashSnap = await getDocs(collection(db, "trash"));
+    const items = []; trashSnap.forEach((d) => items.push({ ...d.data(), tid: d.id }));
+    const cutoff = Date.now() - 30 * 86400000;
+    const old = items.filter((t) => (t.deletedAt?.toMillis?.() || Date.now()) < cutoff);
+    for (const t of old) await deleteDoc(doc(db, "trash", t.tid)); // older than 30 days: gone for good
+    const keep = items.filter((t) => !old.includes(t)).sort((a, b) => (b.deletedAt?.seconds || 0) - (a.deletedAt?.seconds || 0));
+    binBox.innerHTML = keep.length ? "" : '<p class="muted">The recycle bin is empty. Deleted SOTs stay here for 30 days.</p>';
+    keep.forEach((t) => {
+      const row = document.createElement("div");
+      row.className = "user-row";
+      row.innerHTML = `<div style="display:flex;gap:12px;align-items:center;">
+        ${t.photoUrl ? `<img class="master-thumb" src="${esc(t.photoUrl.replace("/upload/", "/upload/w_120,c_limit,q_auto/"))}" />` : ""}
+        <div><div class="user-row-name">${esc(t.article)}${t.year ? " (" + esc(t.year) + ")" : ""}</div>
+        <div class="user-row-email">${esc([t.costing?.Customer, t.costing?.Brand, t.costing?.["Types of Shoe"]].filter(Boolean).join(" · "))}<br>Deleted by ${esc(t.deletedBy || "?")} on ${esc(fmtWhen(t.deletedAt))}</div></div></div>
+        <div class="user-row-actions"><button class="btn-small btn-approve">Restore</button><button class="btn-small btn-danger">Delete forever</button></div>`;
+      const [restoreBtn, foreverBtn] = row.querySelectorAll("button");
+      restoreBtn.addEventListener("click", async () => {
+        restoreBtn.disabled = true;
+        try { await restoreFromTrash(t); renderActivity(); } catch (err) { alert("Could not restore: " + err.message); restoreBtn.disabled = false; }
+      });
+      foreverBtn.addEventListener("click", async () => {
+        if (!confirm(`Delete ${t.article} forever? This cannot be undone.`)) return;
+        await deleteDoc(doc(db, "trash", t.tid)); logAudit("deleted forever", t.article); renderActivity();
+      });
+      binBox.appendChild(row);
+    });
+  } catch (err) { binBox.textContent = "Could not load the recycle bin: " + err.message; }
+  try {
+    const snap = await getDocs(query(collection(db, "auditLog"), orderBy("at", "desc"), limit(150)));
+    const rows = []; snap.forEach((d) => rows.push(d.data()));
+    logBox.innerHTML = rows.length ? "" : '<p class="muted">No activity yet.</p>';
+    rows.forEach((r) => {
+      const line = document.createElement("div");
+      line.className = "log-line";
+      line.innerHTML = `<span class="log-when">${esc(fmtWhen(r.at))}</span><span><strong>${esc(r.name || "?")}</strong> ${esc(r.action)}${r.article ? " <strong>" + esc(r.article) + "</strong>" : ""}${r.detail ? ' <span class="muted">' + esc(r.detail) + "</span>" : ""}</span>`;
+      logBox.appendChild(line);
+    });
+  } catch (err) { logBox.textContent = "Could not load the activity log: " + err.message; }
+}
+async function restoreFromTrash(t) {
+  const { tid, origId, deletedAt, deletedBy, ...data } = t;
+  const latest = await getDocs(query(collection(db, "sots"), where("article", "==", data.article), where("isLatest", "==", true)));
+  data.isLatest = latest.empty ? true : false; // never end up with two "latest" cards
+  await setDoc(doc(db, "sots", origId || tid), data);
+  await deleteDoc(doc(db, "trash", tid));
+  await logAudit("restored", data.article);
+  invalidateSotCache();
 }
 
 // ============================================================
@@ -1603,10 +1919,14 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
     const skipped = importQueue.filter((r) => r.skip).length;
     const auto = importQueue.filter((r) => r.autoNamed).length;
     const dupNames = importQueue.length - new Set(importQueue.map((r) => r.article)).size;
+    // articles already in the database (and not skipped) will be saved as a NEW VERSION of the existing card
+    const existing = new Set((await getAllLatestSots()).map((d) => String(d.article).trim().toLowerCase()));
+    const willVersion = importQueue.filter((r) => !r.skip && existing.has(String(r.article).trim().toLowerCase())).length;
     statusBox.textContent = `Found ${importQueue.length} entr${importQueue.length === 1 ? "y" : "ies"} (${withPhoto} with photo). ` +
       `Labels: ${ctx.known.size} matched automatically, ${stats.kept.size} new kept, ${stats.mapped.size} mapped, ${stats.skipped.size} skipped.` +
       (auto ? ` ${auto} had no article number and got an automatic name.` : "") +
-      (dupNames ? ` ${dupNames} repeat an article number (saved as versions).` : "") +
+      (dupNames ? ` ⚠ ${dupNames} repeat an article number inside this file (saved as versions of each other).` : "") +
+      (willVersion ? ` ⚠ ${willVersion} article(s) already exist in the database and will be saved as a NEW VERSION (the old card stays as history).` : "") +
       (skipped ? ` ${skipped} already imported earlier (will be skipped).` : "") +
       (unrecognised.length ? ` Not recognised and left out: sheet ${unrecognised.map((n) => "“" + n + "”").join(", ")} (no article header found).` : "") +
       " Review below, then confirm.";
@@ -1698,6 +2018,7 @@ document.getElementById("import-confirm-btn").addEventListener("click", async ()
     }
   }
   btn.disabled = false;
+  if (ok) logAudit("imported", "", `${ok} saved, ${failed} failed`);
   statusBox.textContent = `Import finished: ${ok} saved` + (failed ? `, ${failed} failed (upload the same file again — rows already saved are skipped)` : "") + ".";
   invalidateSotCache();
 });
