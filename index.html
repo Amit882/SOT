@@ -25,6 +25,7 @@
       <button type="submit" class="btn btn-primary">Sign in</button>
     </form>
     <button id="show-signup" class="btn-link">Need an account? Request access</button>
+    <p class="build-tag">Build ai-pro-v12</p>
 
     <form id="form-signup" class="stack" hidden>
       <label class="field"><span>Full name</span><input type="text" id="signup-name" required /></label>
@@ -280,7 +281,21 @@
 
 <script type="module" src="firebase-config.js"></script>
 <script type="module" src="cloudinary-config.js"></script>
-<script type="module">import("./app.js?v=" + Date.now());</script>
+<script>
+(function () {
+  var HTML_BUILD = "ai-pro-v12";
+  function banner(msg) {
+    var d = document.getElementById("boot-error");
+    if (!d) { d = document.createElement("div"); d.id = "boot-error"; d.title = "Click to hide"; d.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:2000;background:#A63A32;color:#fff;padding:10px 16px;font:14px system-ui,sans-serif;text-align:center;cursor:pointer"; d.onclick = function () { d.remove(); }; document.body.appendChild(d); }
+    d.textContent = msg;
+  }
+  window.addEventListener("error", function (e) { banner("Page error: " + e.message + " [" + HTML_BUILD + "]"); });
+  window.addEventListener("unhandledrejection", function (e) { banner("Error: " + ((e.reason && (e.reason.code || e.reason.message)) || e.reason) + " [" + HTML_BUILD + "]"); });
+  import("./app.js?v=" + Date.now()).then(function () {
+    if (window.__APP_BUILD && window.__APP_BUILD !== HTML_BUILD) banner("Version mismatch: index.html is " + HTML_BUILD + " but app.js is " + window.__APP_BUILD + ". Upload BOTH files to GitHub.");
+  }).catch(function (e) { banner("App failed to load: " + e.message + " [" + HTML_BUILD + "]"); });
+})();
+</script>
 <div id="lightbox" class="lightbox" hidden><img id="lightbox-img" alt="" /><span class="lightbox-hint">Click anywhere or press Esc to close</span></div>
 </body>
 </html>
