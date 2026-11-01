@@ -48,7 +48,7 @@ async function loadGeminiConfig() {
   try {
     const snap = await getDoc(doc(db, "config", "gemini"));
     if (snap.exists() && snap.data().apiKey) {
-      geminiCfg = { geminiApiKey: String(snap.data().apiKey).trim(), geminiModel: snap.data().model || "gemini-3.1-flash-lite" };
+      geminiCfg = { geminiApiKey: String(snap.data().apiKey).trim(), geminiModel: snap.data().model || "gemini-3.6-flash" };
     }
   } catch (_) { /* no config / no access — AI check stays off */ }
 }
