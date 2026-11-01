@@ -489,7 +489,21 @@ async function renderMatchResults() {
   if (geminiReady() && lastQueryFile) {
     note("AI is checking the top matches…");
     try {
-      const aiTop = await verifyWithGemini(top);
+      // 1) which category is this shoe? then only compare against that category (plus entries with no category)
+      let pool = top;
+      const catList = [...new Set(all.map(categoryOf).filter(Boolean))].sort(natCmp);
+      if (catList.length >= 2) {
+        const cats = await classifyQueryCategory(catList).catch(() => []);
+        if (cats.length) {
+          const want = new Set(cats.map((c) => c.toLowerCase()));
+          const inCat = scored.filter((c) => !categoryOf(c) || want.has(categoryOf(c).toLowerCase()));
+          if (inCat.length) pool = inCat.slice(0, 8);
+          note(`AI sees: ${cats.join(" / ")}. Comparing with ${pool.length} saved ${pool.length === 1 ? "entry" : "entries"} of that kind…`);
+          if (inCat.length) renderResults(results, pool, true);
+        }
+      }
+      // 2) strict side-by-side check
+      const aiTop = await verifyWithGemini(pool);
       // AI is the judge: sort by AI score (visual score only breaks ties); hide the clearly different ones.
       const ranked = aiTop.sort((a, b) => ((b.ai?.score ?? -1) - (a.ai?.score ?? -1)) || (b.score - a.score));
       const good = ranked.filter((x) => x.ai && x.ai.verdict !== "different");
@@ -532,32 +546,10 @@ function candidateJpeg(url) {
   }
   return candidateImgCache.get(url);
 }
-async function verifyWithGemini(candidates) {
-  const qSig = lastQueryFile ? `${lastQueryFile.name}|${lastQueryFile.size}|${lastQueryFile.lastModified}` : "";
-  const cacheKey = qSig + "::" + candidates.map((c) => c.id).join(",");
-  if (aiCache.has(cacheKey)) return candidates.map((c) => ({ ...c, ai: aiCache.get(cacheKey)[c.id] }));
-
-  const letters = "ABCDEFGH";
-  const parts = [{
-    text:
-      "You are a footwear expert helping a shoe factory find the closest existing construction. Image 1 is the target shoe (a photo or a technical drawing). " +
-      "The next images are candidate records from the factory database, labelled A, B, C… with saved details. " +
-      "Judge each candidate by, in this order: (1) shoe TYPE (sandal / slide / thong sandal / sneaker / boot / loafer / flat…), " +
-      "(2) upper style and closure, (3) sole unit and how the sole is attached, (4) heel/cut height. Ignore colour, material finish, and whether it is a photo or a drawing. " +
-      "Scoring: 85-100 = same construction; 50-84 = same shoe type and a similar build, only some details differ (e.g. a thong sandal vs a strappy slide sandal); " +
-      "20-49 = related but clearly a different style; 0-19 = a different shoe type (e.g. sandal vs boot, sandal vs sneaker). " +
-      'verdict: "same" if score>=85, "similar" if 50-84, otherwise "different". ' +
-      'Return ONLY JSON: {"results":[{"id":"A","verdict":"same"|"similar"|"different","score":0-100,"reason":"one short sentence"}]}',
-  }];
-  const [qImg, ...cImgs] = await Promise.all([toJpegBase64(lastQueryFile), ...candidates.map((c) => candidateJpeg(c.photoUrl))]);
-  parts.push({ inline_data: { mime_type: "image/jpeg", data: qImg } });
-  candidates.forEach((c, i) => {
-    parts.push({ text: `Candidate ${letters[i]} — article ${c.article}; type: ${c.costing?.["Types of Shoe"] || c.construction?.Construction || "?"}; brand: ${c.costing?.Brand || "?"}` });
-    parts.push({ inline_data: { mime_type: "image/jpeg", data: cImgs[i] } });
-  });
-
-  // Try the configured model first, then other free Flash/Flash-Lite models if it is
-  // overloaded (503/500), rate-limited (429) or not found (404). Retry once per model.
+// Calls Gemini with the given parts and returns the parsed JSON answer.
+// Tries the configured model first, then other free Flash/Flash-Lite models if it is
+// overloaded (503/500), rate-limited (429) or not found (404). Retries once per model.
+async function geminiJson(parts) {
   const models = [...new Set([geminiCfg.geminiModel, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash"].filter(Boolean))];
   const payload = JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { temperature: 0, responseMimeType: "application/json" } });
   let res = null, lastMsg = "";
@@ -579,12 +571,68 @@ async function verifyWithGemini(candidates) {
   if (!res || !res.ok) throw new Error(res && res.status === 429 ? "today's free AI limit is used up" : "Google AI is busy, error " + lastMsg);
   const data = await res.json();
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
-  const json = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+  return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+}
+
+// Step 1 of the AI match: which of the factory's own categories (SANDAL, HIGH HEEL, ANKLE BOOT…) is this photo?
+// Candidates are then taken only from those categories, so a boot is never compared with a sandal.
+const catCache = new Map();
+async function classifyQueryCategory(categories) {
+  const qSig = lastQueryFile ? `${lastQueryFile.name}|${lastQueryFile.size}|${lastQueryFile.lastModified}` : "";
+  const key = qSig + "::" + categories.join("|");
+  if (catCache.has(key)) return catCache.get(key);
+  const parts = [{
+    text:
+      "You are a footwear expert. Image 1 is a shoe (a photo or technical drawing). Here are the factory's categories: " + JSON.stringify(categories) + ". " +
+      "Pick the 1 or 2 categories that best describe the shoe in Image 1, most likely first. Look at the shoe type and heel height. " +
+      "If none of the categories fits at all, return an empty list. Only use category names exactly as written above. " +
+      'Return ONLY JSON: {"categories":["..."]}',
+  }, { inline_data: { mime_type: "image/jpeg", data: await toJpegBase64(lastQueryFile, 384) } }];
+  const json = await geminiJson(parts);
+  const wanted = new Set(categories.map((c) => c.toLowerCase()));
+  const out = (json.categories || []).map((c) => String(c).trim()).filter((c) => wanted.has(c.toLowerCase())).slice(0, 2);
+  catCache.set(key, out);
+  return out;
+}
+
+async function verifyWithGemini(candidates) {
+  const qSig = lastQueryFile ? `${lastQueryFile.name}|${lastQueryFile.size}|${lastQueryFile.lastModified}` : "";
+  const cacheKey = qSig + "::" + candidates.map((c) => c.id).join(",");
+  if (aiCache.has(cacheKey)) return candidates.map((c) => ({ ...c, ai: aiCache.get(cacheKey)[c.id] }));
+
+  const letters = "ABCDEFGH";
+  const parts = [{
+    text:
+      "You are a strict footwear expert helping a shoe factory find the closest existing construction. Image 1 is the target shoe (a photo or a technical drawing). " +
+      "The next images are candidate records from the factory database, labelled A, B, C… with saved details. " +
+      "Ignore colour, material finish, and whether it is a photo or a drawing. For EACH candidate, answer these checks about its construction compared with Image 1: " +
+      "type_match = same broad shoe family (open sandal incl. thong / slide / strappy / flip-flop; closed flat; sneaker; boot; heeled pump; …). " +
+      "heel_match = heel height class is the same or neighbouring (flat under 2 cm, low 2-4 cm, mid 4-7 cm, high over 7 cm; flat vs mid or high is NOT a match). " +
+      "style_match = upper style, toe/strap layout and closure are essentially the same (e.g. thong with ankle strap vs a slide is NOT the same style). " +
+      "sole_match = sole unit and how it is attached look the same. " +
+      "Then give a score 0-100: 85+ only if all four checks are true; 50-84 if type_match and heel_match are true but style_match or sole_match is false; below 50 if type_match or heel_match is false. " +
+      'Return ONLY JSON: {"results":[{"id":"A","type_match":true|false,"heel_match":true|false,"style_match":true|false,"sole_match":true|false,"score":0-100,"reason":"one short sentence naming the key difference or likeness"}]}',
+  }];
+  const [qImg, ...cImgs] = await Promise.all([toJpegBase64(lastQueryFile), ...candidates.map((c) => candidateJpeg(c.photoUrl))]);
+  parts.push({ inline_data: { mime_type: "image/jpeg", data: qImg } });
+  candidates.forEach((c, i) => {
+    parts.push({ text: `Candidate ${letters[i]} — article ${c.article}; type: ${c.costing?.["Types of Shoe"] || c.construction?.Construction || "?"}; brand: ${c.costing?.Brand || "?"}` });
+    parts.push({ inline_data: { mime_type: "image/jpeg", data: cImgs[i] } });
+  });
+
+  const json = await geminiJson(parts);
   const byId = {};
   (json.results || []).forEach((r, i) => {
     const idx = letters.indexOf(String(r.id || letters[i]).trim().toUpperCase());
     const cand = candidates[idx];
-    if (cand) byId[cand.id] = { verdict: ["same", "similar", "different"].includes(r.verdict) ? r.verdict : "similar", score: Number(r.score), reason: String(r.reason || "") };
+    if (!cand) return;
+    // The rules are enforced here too, so a lenient model answer cannot sneak a wrong shoe type or heel in.
+    let score = Math.max(0, Math.min(100, Number(r.score) || 0));
+    const core = r.type_match !== false && r.heel_match !== false;
+    if (!core) score = Math.min(score, 35);
+    else if (r.style_match === false || r.sole_match === false) score = Math.min(score, 84);
+    const verdict = score >= 85 ? "same" : score >= 50 ? "similar" : "different";
+    byId[cand.id] = { verdict, score, reason: String(r.reason || "") };
   });
   aiCache.set(cacheKey, byId);
   return candidates.map((c) => ({ ...c, ai: byId[c.id] }));
