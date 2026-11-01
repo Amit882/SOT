@@ -12,6 +12,32 @@ import {
 // The AI model that turns a photo into a vector, running fully in the
 // browser — no server involved. First use downloads the model and the
 // browser caches it after that.
+// Build stamp: index.html carries the same one. If they differ, the page shows a warning
+// (it means only one of the two files was replaced on GitHub).
+const BUILD = "ai-pro-v12";
+window.__APP_BUILD = BUILD;
+function friendlyAuthError(err) {
+  const code = String(err?.code || "");
+  const map = {
+    "auth/invalid-credential": "Email or password is wrong.",
+    "auth/invalid-login-credentials": "Email or password is wrong.",
+    "auth/wrong-password": "Email or password is wrong.",
+    "auth/user-not-found": "Email or password is wrong.",
+    "auth/invalid-email": "That email address is not valid.",
+    "auth/user-disabled": "This account has been disabled.",
+    "auth/too-many-requests": "Too many attempts. Wait a few minutes and try again.",
+    "auth/network-request-failed": "Cannot reach Google. Check the internet connection and try again.",
+    "auth/unauthorized-domain": "This website address is not allowed in Firebase. Add it in Firebase → Authentication → Settings → Authorized domains.",
+    "auth/operation-not-allowed": "Email/password sign-in is switched off. Turn it on in Firebase → Authentication → Sign-in method.",
+    "auth/invalid-api-key": "The Firebase API key in firebase-config.js is wrong.",
+    "auth/api-key-not-valid.-please-pass-a-valid-api-key.": "The Firebase API key in firebase-config.js is wrong.",
+    "auth/email-already-in-use": "An account with this email already exists. Sign in instead.",
+    "auth/weak-password": "Password is too weak. Use at least 6 characters.",
+  };
+  return map[code] || ((err && err.message) || "Something went wrong") + (code ? ` (${code})` : "");
+}
+const onId = (id, evt, fn, opts) => { const el = document.getElementById(id); if (el) el.addEventListener(evt, fn, opts); };
+
 // Loaded on demand (it is a big library) so the page itself starts fast.
 let _pipelineFn = null;
 async function loadPipeline() {
@@ -48,7 +74,7 @@ async function loadGeminiConfig() {
   try {
     const snap = await getDoc(doc(db, "config", "gemini"));
     if (snap.exists() && snap.data().apiKey) {
-      geminiCfg = { geminiApiKey: String(snap.data().apiKey).trim(), geminiModel: snap.data().model || "gemini-3.6-flash" };
+      geminiCfg = { geminiApiKey: String(snap.data().apiKey).trim(), geminiModel: snap.data().model || "gemini-3.1-flash-lite" };
     }
   } catch (_) { /* no config / no access — AI check stays off */ }
 }
@@ -110,18 +136,18 @@ const screens = {
 };
 function showScreen(name) { Object.entries(screens).forEach(([k, el]) => (el.hidden = k !== name)); }
 
-document.getElementById("show-signup").addEventListener("click", () => {
+onId("show-signup", "click", () => {
   document.getElementById("form-login").hidden = true;
   document.getElementById("show-signup").hidden = true;
   document.getElementById("form-signup").hidden = false;
 });
-document.getElementById("show-login").addEventListener("click", () => {
+onId("show-login", "click", () => {
   document.getElementById("form-signup").hidden = true;
   document.getElementById("form-login").hidden = false;
   document.getElementById("show-signup").hidden = false;
 });
 
-document.getElementById("form-signup").addEventListener("submit", async (e) => {
+onId("form-signup", "submit", async (e) => {
   e.preventDefault();
   const name = document.getElementById("signup-name").value.trim();
   const email = document.getElementById("signup-email").value.trim();
@@ -139,12 +165,12 @@ document.getElementById("form-signup").addEventListener("submit", async (e) => {
       createdAt: serverTimestamp(),
     });
   } catch (err) {
-    errorBox.textContent = err.message;
+    errorBox.textContent = friendlyAuthError(err);
     errorBox.hidden = false;
   }
 });
 
-document.getElementById("form-login").addEventListener("submit", async (e) => {
+onId("form-login", "submit", async (e) => {
   e.preventDefault();
   const email = document.getElementById("login-email").value.trim();
   const password = document.getElementById("login-password").value;
@@ -153,18 +179,27 @@ document.getElementById("form-login").addEventListener("submit", async (e) => {
   try {
     await signInWithEmailAndPassword(auth, email, password);
   } catch (err) {
-    errorBox.textContent = err.message;
+    errorBox.textContent = friendlyAuthError(err);
     errorBox.hidden = false;
   }
 });
-document.getElementById("signout-btn").addEventListener("click", () => signOut(auth));
-document.getElementById("pending-signout").addEventListener("click", () => signOut(auth));
+onId("signout-btn", "click", () => signOut(auth));
+onId("pending-signout", "click", () => signOut(auth));
 
 onAuthStateChanged(auth, async (user) => {
   currentUser = user;
   if (!user) { showScreen("login"); return; }
-  const snap = await getDoc(doc(db, "users", user.uid));
-  currentProfile = snap.exists() ? snap.data() : null;
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    currentProfile = snap.exists() ? snap.data() : null;
+  } catch (err) {
+    // signed in, but the profile could not be read (usually Firestore rules or network)
+    showScreen("login");
+    const eb = document.getElementById("login-error");
+    if (eb) { eb.textContent = "Signed in, but your profile could not be loaded: " + (err.code || err.message) + ". Check the Firestore rules in Firebase."; eb.hidden = false; }
+    signOut(auth).catch(() => {});
+    return;
+  }
   if (!currentProfile || !currentProfile.approved) { showScreen("pending"); return; }
   showScreen("app");
   getAllLatestSots().catch(() => {});
@@ -187,7 +222,7 @@ function applyTheme(t) {
   try { t = localStorage.getItem("sot-theme"); } catch (_) {}
   if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   applyTheme(t);
-  document.getElementById("theme-btn").addEventListener("click", () => {
+  onId("theme-btn", "click", () => {
     const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
     applyTheme(next);
     try { localStorage.setItem("sot-theme", next); } catch (_) {}
@@ -210,7 +245,7 @@ function applyRoleToUI(role) {
   document.getElementById("nav-upload").hidden = !canUpload(role);
   document.getElementById("nav-import").hidden = !canUpload(role);
   document.getElementById("nav-users").hidden = !canManageUsers(role);
-  document.getElementById("nav-activity").hidden = !canManageUsers(role);
+  const na = document.getElementById("nav-activity"); if (na) na.hidden = !canManageUsers(role);
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -663,7 +698,7 @@ let suggestItems = [], suggestActive = -1;
 const articleInput = document.getElementById("article-input");
 const suggestBox = document.getElementById("suggest-box");
 
-document.getElementById("article-search-btn").addEventListener("click", () => { hideSuggestions(); runArticleSearch(); });
+onId("article-search-btn", "click", () => { hideSuggestions(); runArticleSearch(); });
 articleInput.addEventListener("focus", () => { getAllLatestSots().then(updateSuggestions).catch(() => {}); });
 articleInput.addEventListener("input", updateSuggestions);
 articleInput.addEventListener("keydown", (e) => {
@@ -747,7 +782,7 @@ async function runArticleSearch({ exact = false } = {}) {
 // ============================================================
 const lightbox = document.getElementById("lightbox");
 const lightboxImg = document.getElementById("lightbox-img");
-document.getElementById("modal-img").addEventListener("click", () => {
+onId("modal-img", "click", () => {
   const src = document.getElementById("modal-img").src;
   if (!src || src.endsWith("/")) return;
   lightboxImg.src = src;
@@ -813,7 +848,7 @@ async function renderMaster() {
     cb.closest("tr").classList.toggle("picked", cb.checked);
     updateMasterToolbar();
   }));
-  document.getElementById("master-all").addEventListener("change", (e) => {
+  onId("master-all", "change", (e) => {
     master.filtered.forEach((it) => (e.target.checked ? master.selected.add(it.id) : master.selected.delete(it.id)));
     renderMaster();
   });
@@ -834,7 +869,7 @@ function updateMasterToolbar() {
   document.getElementById("sel-delete").hidden = !canManageUsers(currentProfile.role);
   document.getElementById("master-export").textContent = n ? `Export ${n} to Excel` : "Export to Excel";
 }
-document.getElementById("sel-clear").addEventListener("click", () => { master.selected.clear(); renderMaster(); });
+onId("sel-clear", "click", () => { master.selected.clear(); renderMaster(); });
 
 async function exportMaster() {
   const btn = document.getElementById("master-export");
@@ -856,7 +891,7 @@ async function exportMaster() {
   } catch (err) { alert("Could not export: " + err.message); }
   btn.disabled = false;
 }
-document.getElementById("master-export").addEventListener("click", exportMaster);
+onId("master-export", "click", exportMaster);
 
 function openCompare() {
   const [a, b] = selectedItems();
@@ -877,12 +912,12 @@ function openCompare() {
     <p class="muted" style="margin-top:10px;">Difference = second minus first. Highlighted rows differ.</p>`;
   document.getElementById("compare-backdrop").hidden = false;
 }
-document.getElementById("sel-compare").addEventListener("click", openCompare);
-document.getElementById("compare-close").addEventListener("click", () => (document.getElementById("compare-backdrop").hidden = true));
-document.getElementById("compare-backdrop").addEventListener("click", (e) => { if (e.target.id === "compare-backdrop") e.target.hidden = true; });
+onId("sel-compare", "click", openCompare);
+onId("compare-close", "click", () => (document.getElementById("compare-backdrop").hidden = true));
+onId("compare-backdrop", "click", (e) => { if (e.target.id === "compare-backdrop") e.target.hidden = true; });
 
-document.getElementById("sel-edit").addEventListener("click", () => { document.getElementById("bulk-panel").hidden = !document.getElementById("bulk-panel").hidden; });
-document.getElementById("bulk-apply").addEventListener("click", async () => {
+onId("sel-edit", "click", () => { document.getElementById("bulk-panel").hidden = !document.getElementById("bulk-panel").hidden; });
+onId("bulk-apply", "click", async () => {
   if (!canUpload(currentProfile.role)) return;
   const field = document.getElementById("bulk-field").value;
   const value = document.getElementById("bulk-value").value.trim();
@@ -903,7 +938,7 @@ document.getElementById("bulk-apply").addEventListener("click", async () => {
   } catch (err) { alert("Could not update: " + err.message); }
   btn.disabled = false;
 });
-document.getElementById("sel-delete").addEventListener("click", async () => {
+onId("sel-delete", "click", async () => {
   if (!canManageUsers(currentProfile.role)) return;
   const chosen = selectedItems();
   if (!chosen.length) return;
@@ -921,9 +956,9 @@ document.getElementById("sel-delete").addEventListener("click", async () => {
   btn.disabled = false;
 });
 
-["master-search"].forEach((id) => document.getElementById(id).addEventListener("input", () => { master.shown = 100; renderMaster(); }));
-["master-customer", "master-brand", "master-category", "master-ops"].forEach((id) => document.getElementById(id).addEventListener("change", () => { master.shown = 100; renderMaster(); }));
-document.getElementById("master-more").addEventListener("click", () => { master.shown += 200; renderMaster(); });
+["master-search"].forEach((id) => onId(id, "input", () => { master.shown = 100; renderMaster(); }));
+["master-customer", "master-brand", "master-category", "master-ops"].forEach((id) => onId(id, "change", () => { master.shown = 100; renderMaster(); }));
+onId("master-more", "click", () => { master.shown += 200; renderMaster(); });
 
 // ============================================================
 // Add SOT tab — fixed Business SOT rows + duplicate/version notice
@@ -946,7 +981,7 @@ function updateSotTotal() {
   sotTable.querySelectorAll(".sot-min").forEach((inp) => (total += Number(inp.value || 0)));
   document.getElementById("add-sot-total").textContent = total.toFixed(1);
 }
-document.getElementById("add-sot-row").addEventListener("click", () => addSotRow());
+onId("add-sot-row", "click", () => addSotRow());
 const extraOpSelect = document.getElementById("add-sot-extra");
 EXTRA_OPERATIONS.forEach((op) => { const o = document.createElement("option"); o.value = op; o.textContent = op; extraOpSelect.appendChild(o); });
 extraOpSelect.addEventListener("change", () => {
@@ -965,7 +1000,7 @@ function resetSotTable() {
 }
 
 const dupNotice = document.getElementById("duplicate-notice");
-document.getElementById("add-article").addEventListener("blur", async (e) => {
+onId("add-article", "blur", async (e) => {
   const val = e.target.value.trim();
   dupNotice.style.display = "none";
   if (!val) return;
@@ -1003,7 +1038,7 @@ const removedExtra = new Set(); // extra photos the user crossed out while editi
 let baseItem = null; // the entry being edited / versioned, so fields the form has no box for are not lost
 let editingId = null; // set when the Add form is being used to edit an existing doc, instead of creating one
 
-document.getElementById("form-add-sot").addEventListener("submit", async (e) => {
+onId("form-add-sot", "submit", async (e) => {
   e.preventDefault();
   const statusBox = document.getElementById("add-status");
   statusBox.hidden = false;
@@ -1167,7 +1202,7 @@ function enterNewEntryMode() {
   setupMatchPhotoBar(true, "Use the photo I uploaded for matching");
   showAddTab();
 }
-document.getElementById("match-new-btn").addEventListener("click", enterNewEntryMode);
+onId("match-new-btn", "click", enterNewEntryMode);
 
 function exitEditMode() {
   editingId = null; baseItem = null; removedExtra.clear(); renderExtraPhotoList();
@@ -1209,7 +1244,7 @@ async function deleteSotArticle(item) {
   } catch (err) { alert("Could not delete: " + err.message); }
 }
 
-document.getElementById("modal-close").addEventListener("click", () => (backdrop.hidden = true));
+onId("modal-close", "click", () => (backdrop.hidden = true));
 backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.hidden = true; });
 
 function kvGrid(container, obj) {
@@ -1346,7 +1381,7 @@ async function renderInsights() {
     }).join("")}</tr>`).join("");
   document.getElementById("ins-note").textContent = `${pool.length} article${pool.length === 1 ? "" : "s"}. Operation averages count only articles that use that operation.`;
 }
-["ins-group", "ins-customer"].forEach((id) => document.getElementById(id).addEventListener("change", () => renderInsights()));
+["ins-group", "ins-customer"].forEach((id) => onId(id, "change", () => renderInsights()));
 
 // ============================================================
 // Activity tab (Master / Master God): recycle bin + audit log
@@ -1796,33 +1831,4 @@ async function extractSheetImages(zip) {
       if (!file) continue;
       const col = Number([...from.children].find((c) => c.localName === "col").textContent);
       const row = Number([...from.children].find((c) => c.localName === "row").textContent);
-      list.push({ col, row, ext, base64: await file.async("base64") });
-    }
-    result[name] = list;
-  }
-  return result;
-}
-
-function pickImageForArticle(images, col) {
-  // photo is anchored at the block's first column, near the top of the card
-  const near = (images || []).filter((im) => im.row <= 22 && im.col >= col && im.col <= col + 2);
-  if (!near.length) return null;
-  near.sort((a, b) => a.col - b.col || a.row - b.row);
-  const im = near[0];
-  return `data:image/${im.ext === "jpg" ? "jpeg" : im.ext};base64,${im.base64}`;
-}
-
-// Reads sheet names/states from workbook.xml, so hidden sheets can be skipped.
-async function listSheets(zip) {
-  const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-  const parse = async (path) => {
-    const f = zip.file(path);
-    return f ? new DOMParser().parseFromString(await f.async("string"), "application/xml") : null;
-  };
-  const wb = await parse("xl/workbook.xml");
-  const relDoc = await parse("xl/_rels/workbook.xml.rels");
-  const targets = {};
-  if (relDoc) for (const el of relDoc.getElementsByTagName("Relationship")) targets[el.getAttribute("Id")] = el.getAttribute("Target");
-  return [...wb.getElementsByTagName("sheet")].map((sh) => {
-    const t = targets[sh.getAttributeNS(REL, "id")] || "";
-    return {
+      list.push({ col, row, ext, base64: awai
