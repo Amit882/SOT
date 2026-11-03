@@ -2,7 +2,7 @@ import { auth, db, MASTER_GOD_UID } from "./firebase-config.js";
 import { cloudName as CLOUDINARY_CLOUD_NAME, uploadPreset as CLOUDINARY_UPLOAD_PRESET } from "./cloudinary-config.js";
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut,
-  onAuthStateChanged, updateProfile,
+  onAuthStateChanged, updateProfile, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
   doc, setDoc, getDoc, getDocs, collection, query, where,
@@ -14,7 +14,7 @@ import {
 // browser caches it after that.
 // Build stamp: index.html carries the same one. If they differ, the page shows a warning
 // (it means only one of the two files was replaced on GitHub).
-const BUILD = "ai-pro-v13";
+const BUILD = "ai-pro-v14";
 window.__APP_BUILD = BUILD;
 function friendlyAuthError(err) {
   const code = String(err?.code || "");
@@ -33,6 +33,7 @@ function friendlyAuthError(err) {
     "auth/api-key-not-valid.-please-pass-a-valid-api-key.": "The Firebase API key in firebase-config.js is wrong.",
     "auth/email-already-in-use": "An account with this email already exists. Sign in instead.",
     "auth/weak-password": "Password is too weak. Use at least 6 characters.",
+    "permission-denied": "Not allowed yet — the Master must publish the newest Firestore rules (firestore.rules) in Firebase.",
   };
   return map[code] || ((err && err.message) || "Something went wrong") + (code ? ` (${code})` : "");
 }
@@ -183,6 +184,52 @@ onId("form-login", "submit", async (e) => {
     errorBox.hidden = false;
   }
 });
+// ---- Forgot password: (A) reset link by email, (B) ask the Master (for dummy / shared emails) ----
+let forgotMode = "a";
+function setForgotMode(m) {
+  forgotMode = m;
+  document.getElementById("fg-mode-a").classList.toggle("on", m === "a");
+  document.getElementById("fg-mode-b").classList.toggle("on", m === "b");
+  document.getElementById("fg-extra").hidden = m !== "b";
+  document.getElementById("fg-help").textContent = m === "a"
+    ? "Use this if your login email is a real inbox you can open. We send a reset link to it."
+    : "Use this if your login email is a dummy or someone else's inbox. Tell the Master who you are — he will reset your access and contact you.";
+  document.getElementById("forgot-submit").textContent = m === "a" ? "Send reset link" : "Ask Master to reset";
+  document.getElementById("forgot-email").placeholder = "the email you sign in with";
+  document.getElementById("forgot-msg").hidden = true;
+}
+function showForgot(on) {
+  document.getElementById("form-login").hidden = on;
+  document.getElementById("show-signup").hidden = on;
+  const sf = document.getElementById("show-forgot"); if (sf) sf.hidden = on;
+  document.getElementById("panel-forgot").hidden = !on;
+  if (on) { setForgotMode("a"); document.getElementById("forgot-email").value = document.getElementById("login-email").value; }
+}
+onId("show-forgot", "click", () => showForgot(true));
+onId("forgot-back", "click", () => showForgot(false));
+onId("fg-mode-a", "click", () => setForgotMode("a"));
+onId("fg-mode-b", "click", () => setForgotMode("b"));
+onId("form-forgot", "submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("forgot-email").value.trim();
+  const msg = document.getElementById("forgot-msg");
+  const btn = document.getElementById("forgot-submit");
+  const say = (t, ok) => { msg.textContent = t; msg.className = ok ? "ok-text" : "error-text"; msg.hidden = false; };
+  btn.disabled = true;
+  try {
+    if (forgotMode === "a") {
+      await sendPasswordResetEmail(auth, email);
+      say("If this email has an account, a reset link is on its way. Check the Spam folder too.", true);
+    } else {
+      const name = document.getElementById("forgot-name").value.trim();
+      const note = document.getElementById("forgot-note").value.trim();
+      if (!name) throw new Error("Please type your name so the Master knows who you are.");
+      await addDoc(collection(db, "resetRequests"), { name, email, note, status: "open", createdAt: serverTimestamp() });
+      say("Request sent. The Master will reset your access and contact you.", true);
+    }
+  } catch (err) { say(friendlyAuthError(err), false); }
+  btn.disabled = false;
+});
 onId("signout-btn", "click", () => signOut(auth));
 onId("pending-signout", "click", () => signOut(auth));
 
@@ -208,7 +255,7 @@ onAuthStateChanged(auth, async (user) => {
   prewarmModel();
   document.getElementById("user-name").textContent = currentProfile.name || user.email;
   document.getElementById("user-role").textContent = currentProfile.role.replace("_", " ");
-  if (canManageUsers(currentProfile.role)) watchUsers();
+  if (canManageUsers(currentProfile.role)) { watchUsers(); watchResetRequests(); }
 });
 
 // ---- Dark mode (remembered in this browser) + "/" shortcut ----
@@ -246,6 +293,7 @@ function applyRoleToUI(role) {
   document.getElementById("nav-import").hidden = !canUpload(role);
   document.getElementById("nav-users").hidden = !canManageUsers(role);
   const na = document.getElementById("nav-activity"); if (na) na.hidden = !canManageUsers(role);
+  const nq = document.getElementById("nav-quality"); if (nq) nq.hidden = !canUpload(role);
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -255,7 +303,8 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
     btn.classList.add("active");
     document.getElementById(btn.dataset.tab).classList.add("active");
     // pick up other people's changes: drop a cache older than 20 seconds when opening a list tab
-    if (["tab-master", "tab-search", "tab-match"].includes(btn.dataset.tab) && Date.now() - sotCacheAt > 20000) sotCache = null;
+    if (["tab-master", "tab-search", "tab-match", "tab-quality"].includes(btn.dataset.tab) && Date.now() - sotCacheAt > 20000) sotCache = null;
+    if (btn.dataset.tab === "tab-quality") renderQuality().catch(() => {});
     if (btn.dataset.tab === "tab-master") renderMaster().catch(() => {});
     if (btn.dataset.tab === "tab-activity") renderActivity();
     if (btn.dataset.tab === "tab-upload" && (editingId || matchFlow || document.getElementById("add-mode-banner").style.display === "block")) {
@@ -339,6 +388,7 @@ function invalidateSotCache() {
   setTimeout(() => {
     const active = document.querySelector(".tab.active")?.id;
     if (active === "tab-master") renderMaster().catch(() => {});
+    else if (active === "tab-quality") renderQuality().catch(() => {});
     else if (active === "tab-search") runArticleSearch().catch(() => {});
     else getAllLatestSots().catch(() => {});
   }, 300);
@@ -371,27 +421,74 @@ async function getAllSotDocs() { // every version, not just the latest
 // Moves SOT docs to the recycle bin (kept 30 days), 200 at a time.
 async function moveToTrash(docs) {
   const who = currentProfile?.name || currentUser.email || "";
+  const entries = []; // kept in memory so the delete can be undone
   for (let i = 0; i < docs.length; i += 200) {
     const b = writeBatch(db);
     docs.slice(i, i + 200).forEach((d) => {
       const { id, ...data } = d;
-      b.set(doc(collection(db, "trash")), { ...data, origId: id, deletedAt: serverTimestamp(), deletedBy: who });
+      const ref = doc(collection(db, "trash"));
+      entries.push({ tid: ref.id, id, data });
+      b.set(ref, { ...data, origId: id, deletedAt: serverTimestamp(), deletedBy: who });
       b.delete(doc(db, "sots", id));
     });
     await b.commit();
   }
+  return entries;
 }
 // After deleting, every article that still has versions must have exactly one latest.
+// Returns the ids that were promoted to "latest" (needed to undo).
 async function fixLatestFlags(remaining, articles) {
   const byArticle = new Map();
   remaining.forEach((d) => { if (articles.has(d.article)) { if (!byArticle.has(d.article)) byArticle.set(d.article, []); byArticle.get(d.article).push(d); } });
-  const b = writeBatch(db); let n = 0;
+  const b = writeBatch(db); const promoted = [];
   byArticle.forEach((list) => {
     if (list.some((d) => d.isLatest)) return;
     list.sort((a, b2) => (b2.year || 0) - (a.year || 0) || (b2.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-    b.update(doc(db, "sots", list[0].id), { isLatest: true }); n++;
+    b.update(doc(db, "sots", list[0].id), { isLatest: true }); promoted.push(list[0].id);
   });
-  if (n) await b.commit();
+  if (promoted.length) await b.commit();
+  return promoted;
+}
+async function undoDelete(entries, promoted) {
+  for (let i = 0; i < entries.length; i += 200) {
+    const b = writeBatch(db);
+    entries.slice(i, i + 200).forEach((e) => { b.set(doc(db, "sots", e.id), e.data); b.delete(doc(db, "trash", e.tid)); });
+    await b.commit();
+  }
+  if (promoted.length) {
+    const b = writeBatch(db);
+    promoted.forEach((id) => b.update(doc(db, "sots", id), { isLatest: false }));
+    await b.commit();
+  }
+}
+
+// ---- Toast with optional action button (used for "Undo") ----
+function showToast(message, actionLabel, onAction, ms = 12000) {
+  let host = document.getElementById("toast-host");
+  if (!host) { host = document.createElement("div"); host.id = "toast-host"; document.body.appendChild(host); }
+  const t = document.createElement("div");
+  t.className = "toast";
+  const span = document.createElement("span"); span.textContent = message; t.appendChild(span);
+  const close = () => { t.classList.add("out"); setTimeout(() => t.remove(), 250); };
+  if (actionLabel) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = actionLabel;
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await onAction(); span.textContent = "Done."; b.remove(); setTimeout(close, 1800); }
+      catch (err) { span.textContent = "Failed: " + err.message; b.remove(); setTimeout(close, 5000); }
+    });
+    t.appendChild(b);
+  }
+  host.appendChild(t);
+  if (ms) setTimeout(() => { if (!t.querySelector("button")?.disabled) close(); }, ms);
+  return t;
+}
+function offerUndo(msg, entries, promoted) {
+  showToast(msg, "Undo", async () => {
+    await undoDelete(entries, promoted);
+    await logAudit("undo delete", "", `${entries.length} version(s) restored`);
+    invalidateSotCache();
+  });
 }
 
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
@@ -867,6 +964,7 @@ function updateMasterToolbar() {
   document.getElementById("sel-edit").hidden = !canUpload(currentProfile.role);
   document.getElementById("sel-delete").hidden = !canManageUsers(currentProfile.role);
   document.getElementById("master-export").textContent = n ? `Export ${n} to Excel` : "Export to Excel";
+  const pb = document.getElementById("master-export-pics"); if (pb && !pb.disabled) pb.textContent = n ? `Export ${n} with photos` : "Export with photos";
 }
 onId("sel-clear", "click", () => { master.selected.clear(); renderMaster(); });
 
@@ -891,6 +989,82 @@ async function exportMaster() {
   btn.disabled = false;
 }
 onId("master-export", "click", exportMaster);
+
+// Excel with the shoe photos embedded (ExcelJS is loaded only when this is used)
+function loadScriptOnce(url, globalName) {
+  if (window[globalName]) return Promise.resolve(window[globalName]);
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = url; el.onload = () => (window[globalName] ? resolve(window[globalName]) : reject(new Error(globalName + " did not load")));
+    el.onerror = () => reject(new Error("Could not download the Excel library (check internet)."));
+    document.head.appendChild(el);
+  });
+}
+async function fetchThumb(url) {
+  const u = url.replace("/upload/", "/upload/w_220,h_220,c_limit,q_auto:good,f_jpg/");
+  const res = await fetch(u);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return await res.arrayBuffer();
+}
+async function exportMasterWithPhotos() {
+  const btn = document.getElementById("master-export-pics");
+  const list = master.selected.size ? selectedItems() : master.filtered;
+  if (!list.length) return;
+  if (list.length > 400 && !confirm(`${list.length} rows with photos will make a big file and take a few minutes. Continue?\n(Tip: filter by customer first, or select fewer rows.)`)) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  try {
+    btn.textContent = "Loading Excel library…";
+    const ExcelJS = await loadScriptOnce("https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js", "ExcelJS");
+    const ops = [...new Set([...BUSINESS_SOT_OPERATIONS, ...list.flatMap((it) => Object.keys(it.businessSOT || {}))])]
+      .filter((op) => list.some((it) => Number(it.businessSOT?.[op]) > 0));
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("SOT", { views: [{ state: "frozen", ySplit: 1, xSplit: 0 }] });
+    const head = ["S/L", "CUSTOMER", "BRAND", "CATEGORY", "ARTICLE", "PHOTO", "SOT", ...ops.map((o) => o.toUpperCase())];
+    ws.addRow(head);
+    ws.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    ws.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E6B57" } };
+    ws.getRow(1).alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    ws.getRow(1).height = 24;
+    ws.columns = head.map((h, i) => ({ width: i === 5 ? 17 : i === 0 ? 5 : i < 5 ? 15 : 10 }));
+    list.forEach((it, i) => {
+      const r = ws.addRow([i + 1, it.costing?.Customer || "", brandOf(it), categoryOf(it), it.article, "",
+        Math.round(totalMinutes(it.businessSOT) * 100) / 100, ...ops.map((op) => (Number(it.businessSOT?.[op]) > 0 ? Number(it.businessSOT[op]) : ""))]);
+      r.height = 84;
+      r.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    });
+    // download photos, 6 at a time
+    let done = 0, noPhoto = 0, next = 0;
+    const bufs = new Array(list.length);
+    const worker = async () => {
+      while (next < list.length) {
+        const i = next++;
+        try { if (list[i].photoUrl) bufs[i] = await fetchThumb(list[i].photoUrl); } catch (e) { noPhoto++; }
+        done++;
+        btn.textContent = `Photos ${done} / ${list.length}…`;
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    bufs.forEach((buf, i) => {
+      if (!buf) return;
+      const id = wb.addImage({ buffer: buf, extension: "jpeg" });
+      ws.addImage(id, { tl: { col: 5.08, row: i + 1.06 }, ext: { width: 100, height: 100 }, editAs: "oneCell" });
+    });
+    btn.textContent = "Building file…";
+    const out = await wb.xlsx.writeBuffer();
+    const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `SOT-with-photos-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    logAudit("exported", "", `${list.length} article(s) with photos`);
+    if (noPhoto) showToast(`${noPhoto} photo(s) could not be loaded and were left blank.`, null, null, 8000);
+  } catch (err) { alert("Could not export: " + err.message); }
+  btn.textContent = label;
+  btn.disabled = false;
+}
+onId("master-export-pics", "click", exportMasterWithPhotos);
 
 function openCompare() {
   const [a, b] = selectedItems();
@@ -947,10 +1121,11 @@ onId("sel-delete", "click", async () => {
     const arts = new Set(chosen.map((c) => c.article));
     const all = await getAllSotDocs();
     const mine = all.filter((d) => arts.has(d.article));
-    await moveToTrash(mine);
+    const entries = await moveToTrash(mine);
     await logAudit("bulk deleted", "", `${arts.size} article(s), ${mine.length} version(s)`);
     master.selected.clear();
     invalidateSotCache();
+    offerUndo(`Deleted ${arts.size} article(s).`, entries, []);
   } catch (err) { alert("Could not delete: " + err.message); }
   btn.disabled = false;
 });
@@ -958,6 +1133,76 @@ onId("sel-delete", "click", async () => {
 ["master-search"].forEach((id) => onId(id, "input", () => { master.shown = 100; renderMaster(); }));
 ["master-customer", "master-brand", "master-category", "master-ops"].forEach((id) => onId(id, "change", () => { master.shown = 100; renderMaster(); }));
 onId("master-more", "click", () => { master.shown += 200; renderMaster(); });
+
+// ============================================================
+// Data quality — what is missing or looks wrong, with a Fix button
+// ============================================================
+const QUALITY_CHECKS = [
+  ["nophoto", "No photo"],
+  ["nosot", "No SOT minutes"],
+  ["nocustomer", "No customer"],
+  ["nobrand", "No brand"],
+  ["nocategory", "No category"],
+  ["outlier", "Unusual SOT"],
+];
+let qualityFilter = "all";
+function computeQuality(items) {
+  // typical SOT per category (median) to spot values that are far off
+  const byCat = new Map();
+  items.forEach((it) => { const t = totalMinutes(it.businessSOT); if (t > 0 && categoryOf(it)) { const k = categoryOf(it).toLowerCase(); if (!byCat.has(k)) byCat.set(k, []); byCat.get(k).push(t); } });
+  const median = new Map();
+  byCat.forEach((arr, k) => { if (arr.length >= 4) { arr.sort((a, b) => a - b); median.set(k, arr[Math.floor(arr.length / 2)]); } });
+  const issues = [];
+  items.forEach((it) => {
+    const list = [];
+    const noEmb = !Array.isArray(it.embedding) || !it.embedding.some((v) => v);
+    if (!it.photoUrl || noEmb) list.push(["nophoto", it.photoUrl ? "Photo not readable by AI" : "No photo"]);
+    const tot = totalMinutes(it.businessSOT);
+    if (!(tot > 0)) list.push(["nosot", "No SOT minutes"]);
+    if (!String(it.costing?.Customer || "").trim()) list.push(["nocustomer", "No customer"]);
+    if (!brandOf(it)) list.push(["nobrand", "No brand"]);
+    if (!categoryOf(it)) list.push(["nocategory", "No category"]);
+    const med = median.get(categoryOf(it).toLowerCase());
+    if (med && tot > 0 && (tot > med * 2 || tot < med / 2)) list.push(["outlier", `SOT ${Math.round(tot * 10) / 10} min vs usual ~${Math.round(med)} for ${categoryOf(it)}`]);
+    if (list.length) issues.push({ item: it, list });
+  });
+  return issues;
+}
+async function renderQuality() {
+  const items = await getAllLatestSots();
+  const issues = computeQuality(items);
+  const counts = {}; QUALITY_CHECKS.forEach(([k]) => (counts[k] = issues.filter((x) => x.list.some(([c]) => c === k)).length));
+  const chips = document.getElementById("quality-chips");
+  chips.innerHTML = "";
+  const mkChip = (key, label, n) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "q-chip" + (qualityFilter === key ? " on" : "") + (n ? "" : " zero");
+    b.innerHTML = `<strong>${n}</strong><span>${esc(label)}</span>`;
+    b.addEventListener("click", () => { qualityFilter = qualityFilter === key ? "all" : key; renderQuality(); });
+    chips.appendChild(b);
+  };
+  mkChip("all", "Articles to check", issues.length);
+  QUALITY_CHECKS.forEach(([k, l]) => mkChip(k, l, counts[k]));
+  const list = document.getElementById("quality-list");
+  list.innerHTML = "";
+  const shown = issues.filter((x) => qualityFilter === "all" || x.list.some(([c]) => c === qualityFilter));
+  document.getElementById("quality-summary").textContent = items.length
+    ? `${items.length} articles checked · ${issues.length} need attention` : "No articles yet.";
+  if (!shown.length) { list.innerHTML = `<p class="muted" style="padding:12px 0;">${items.length ? "Nothing to fix here — all good." : ""}</p>`; return; }
+  shown.slice(0, 300).forEach(({ item, list: ls }) => {
+    const row = document.createElement("div");
+    row.className = "q-row";
+    row.innerHTML = `
+      <img src="${esc((item.photoUrl || "").replace("/upload/", "/upload/w_120,c_limit,q_auto/"))}" alt="" />
+      <div class="q-main"><strong>${esc(item.article)}</strong> <span class="muted">${esc([item.costing?.Customer, item.costing?.Brand].filter(Boolean).join(" · "))}</span>
+        <div class="q-tags">${ls.map(([, t]) => `<span class="q-tag">${esc(t)}</span>`).join("")}</div></div>
+      <div class="q-act"><button type="button" class="btn-small q-open">Open</button>${canUpload(currentProfile.role) ? `<button type="button" class="btn-small q-fix">Fix</button>` : ""}</div>`;
+    row.querySelector(".q-open").addEventListener("click", () => { matchFlow = false; openModal(item); });
+    row.querySelector(".q-fix")?.addEventListener("click", () => enterEditMode(item));
+    list.appendChild(row);
+  });
+  if (shown.length > 300) { const p = document.createElement("p"); p.className = "muted"; p.textContent = `…and ${shown.length - 300} more. Fix these first, the rest will show up.`; list.appendChild(p); }
+}
 
 // ============================================================
 // Add SOT tab — fixed Business SOT rows + duplicate/version notice
@@ -1071,10 +1316,20 @@ onId("form-add-sot", "submit", async (e) => {
       statusBox.textContent = "Entry updated.";
       exitEditMode();
     } else {
-      statusBox.textContent = "Uploading photo…";
-      const photoUrl = await uploadToCloudinary(photoFile);
-      statusBox.textContent = "Generating embedding…";
-      const embedding = await embedImage(photoUrl);
+      let photoUrl, embedding;
+      if (copyMode) {
+        if (String(formData.article).trim().toLowerCase() === String(baseItem.article).trim().toLowerCase())
+          throw new Error("Type a NEW article number — this is a copy, not a new version of " + baseItem.article + ".");
+      }
+      const keepPhoto = copyMode && !photoFile && document.getElementById("copy-same-photo")?.checked;
+      if (keepPhoto) {
+        photoUrl = baseItem.photoUrl; embedding = baseItem.embedding;
+      } else {
+        statusBox.textContent = "Uploading photo…";
+        photoUrl = await uploadToCloudinary(photoFile);
+        statusBox.textContent = "Generating embedding…";
+        embedding = await embedImage(photoUrl);
+      }
       statusBox.textContent = "Saving…";
       const isNewVersion = await saveSotWithVersioning({ ...formData, photoUrl, embedding });
       logAudit(isNewVersion ? "new version" : "added", formData.article);
@@ -1203,8 +1458,36 @@ function enterNewEntryMode() {
 }
 onId("match-new-btn", "click", enterNewEntryMode);
 
+let copyMode = false;
+function setCopyPhotoBar(on) {
+  const bar = document.getElementById("copy-photo-bar");
+  if (bar) bar.hidden = !on;
+  const cb = document.getElementById("copy-same-photo");
+  if (cb) {
+    cb.checked = on;
+    cb.onchange = () => { document.getElementById("add-photo").required = !cb.checked; };
+  }
+}
+// 4) Copy as a NEW SOT: same data, different article number (a different shoe that is built almost the same)
+function enterCopyMode(item) {
+  editingId = null; matchFlow = false; copyMode = true;
+  baseItem = { ...item, extraPhotos: [] };
+  document.getElementById("form-add-sot").reset();
+  fillAddForm(item);
+  document.getElementById("add-article").value = "";
+  document.getElementById("add-photo").required = false;
+  setCopyPhotoBar(true);
+  setSubmitLabel("Save as new SOT");
+  setBanner(`Copy of ${item.article}. Type the NEW article number, change what is different, then press Save as new SOT. The original stays untouched.`);
+  dupNotice.style.display = "none";
+  document.getElementById("match-photo-bar").hidden = true;
+  showAddTab();
+  setTimeout(() => document.getElementById("add-article").focus(), 50);
+}
+
 function exitEditMode() {
   editingId = null; baseItem = null; removedExtra.clear(); renderExtraPhotoList();
+  copyMode = false; setCopyPhotoBar(false);
   matchFlow = false;
   document.getElementById("add-photo").required = true;
   setSubmitLabel("Save entry");
@@ -1223,11 +1506,12 @@ async function deleteSotVersion(item) {
   if (!confirm(`Delete SOT ${item.article}${item.year ? " (" + item.year + ")" : ""}?\nIt goes to the recycle bin for 30 days.`)) return;
   try {
     const all = await getAllSotDocs();
-    await moveToTrash(all.filter((d) => d.id === item.id));
-    await fixLatestFlags(all.filter((d) => d.id !== item.id), new Set([item.article]));
+    const entries = await moveToTrash(all.filter((d) => d.id === item.id));
+    const promoted = await fixLatestFlags(all.filter((d) => d.id !== item.id), new Set([item.article]));
     await logAudit("deleted", item.article, item.year ? "version " + item.year : "");
     backdrop.hidden = true;
     invalidateSotCache();
+    offerUndo(`Deleted ${item.article}${item.year ? " (" + item.year + ")" : ""}.`, entries, promoted);
   } catch (err) { alert("Could not delete: " + err.message); }
 }
 async function deleteSotArticle(item) {
@@ -1236,11 +1520,53 @@ async function deleteSotArticle(item) {
   try {
     const all = await getAllSotDocs();
     const mine = all.filter((d) => d.article === item.article);
-    await moveToTrash(mine);
+    const entries = await moveToTrash(mine);
     await logAudit("deleted article", item.article, mine.length + " version(s)");
     backdrop.hidden = true;
     invalidateSotCache();
+    offerUndo(`Deleted article ${item.article} (${mine.length} version${mine.length === 1 ? "" : "s"}).`, entries, []);
   } catch (err) { alert("Could not delete: " + err.message); }
+}
+
+// ---- Print / save as PDF: one clean page per SOT with the shoe photo ----
+function printCard(item) {
+  let sheet = document.getElementById("print-sheet");
+  if (!sheet) { sheet = document.createElement("div"); sheet.id = "print-sheet"; document.body.appendChild(sheet); }
+  const big = (u) => esc((u || "").replace("/upload/", "/upload/w_1000,c_limit,q_auto/"));
+  const small = (u) => esc((u || "").replace("/upload/", "/upload/w_300,c_limit,q_auto/"));
+  const kv = (title, obj) => {
+    const rows = Object.entries(obj || {}).filter(([, v]) => v !== "" && v != null && v !== 0);
+    return rows.length ? `<h3>${title}</h3><table class="pt kv">${rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>` : "";
+  };
+  const ops = Object.entries(item.businessSOT || {}).filter(([, v]) => Number(v) > 0);
+  const total = totalMinutes(item.businessSOT);
+  const meta = [item.costing?.Customer, item.costing?.Brand, item.costing?.["Types of Shoe"]].filter(Boolean).join(" · ");
+  sheet.innerHTML = `
+    <div class="p-head">
+      <div><div class="p-art">${esc(item.article)}${item.year ? ` <span>(${esc(item.year)})</span>` : ""}</div>
+        <div class="p-name">${esc(item.construction?.Construction || item.costing?.["Types of Shoe"] || "")}</div>
+        <div class="p-meta">${esc(meta)}</div></div>
+      <div class="p-stamp">SOT card<br>Printed ${new Date().toLocaleDateString()}</div>
+    </div>
+    <div class="p-top">
+      <div class="p-photo">${item.photoUrl ? `<img src="${big(item.photoUrl)}" />` : ""}</div>
+      <div class="p-ops"><h3>Business SOT</h3>
+        ${ops.length ? `<table class="pt ops">${ops.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${esc(v)}</td></tr>`).join("")}<tr class="tot"><td>Total (min)</td><td class="n">${Math.round(total * 100) / 100}</td></tr></table>` : `<p class="muted">No operations recorded.</p>`}
+      </div>
+    </div>
+    ${(item.extraPhotos || []).length ? `<div class="p-extra">${item.extraPhotos.slice(0, 6).map((p) => `<img src="${small(p.url)}" />`).join("")}</div>` : ""}
+    <div class="p-cols">
+      <div>${kv("Construction", item.construction)}${kv("Costing", item.costing)}</div>
+      <div>${kv("Efficiency", item.efficiency)}${kv("Notes", item.notes)}${kv("Other", item.extra)}</div>
+    </div>`;
+  const imgs = [...sheet.querySelectorAll("img")];
+  const ready = Promise.all(imgs.map((im) => (im.complete ? 1 : new Promise((r) => { im.onload = im.onerror = r; }))));
+  const oldTitle = document.title;
+  document.title = `SOT ${item.article}`;
+  document.body.classList.add("printing");
+  const after = () => { document.body.classList.remove("printing"); document.title = oldTitle; window.removeEventListener("afterprint", after); };
+  window.addEventListener("afterprint", after);
+  Promise.race([ready, new Promise((r) => setTimeout(r, 6000))]).then(() => setTimeout(() => window.print(), 150));
 }
 
 onId("modal-close", "click", () => (backdrop.hidden = true));
@@ -1294,6 +1620,9 @@ async function openModal(item) {
   delBtn.hidden = !mayDelete; delAllBtn.hidden = true;
   delBtn.onclick = () => deleteSotVersion(item);
   delAllBtn.onclick = () => deleteSotArticle(item);
+  const printBtn = document.getElementById("modal-print-btn"); if (printBtn) printBtn.onclick = () => printCard(item);
+  const copyBtn = document.getElementById("modal-copy-btn");
+  if (copyBtn) { copyBtn.style.display = canUpload(currentProfile.role) ? "inline-block" : "none"; copyBtn.onclick = () => enterCopyMode(item); }
 
   kvGrid(document.getElementById("modal-construction"), item.construction);
   kvGrid(document.getElementById("modal-costing"), item.costing);
@@ -1418,6 +1747,33 @@ function watchUsers() {
     renderUserList(document.getElementById("pending-list"), visible.filter((u) => !u.approved), true);
     renderUserList(document.getElementById("all-users-list"), visible.filter((u) => u.approved), false);
   });
+}
+
+function watchResetRequests() {
+  const box = document.getElementById("reset-box"), list = document.getElementById("reset-list");
+  if (!box || !list) return;
+  onSnapshot(query(collection(db, "resetRequests"), where("status", "==", "open")), (snap) => {
+    const reqs = [];
+    snap.forEach((d) => reqs.push({ ...d.data(), id: d.id }));
+    box.hidden = reqs.length === 0;
+    list.innerHTML = "";
+    reqs.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "user-row";
+      row.innerHTML = `<div><div class="user-row-name">${esc(r.name || "—")}</div><div class="user-row-email">${esc(r.email)}</div>${r.note ? `<div class="user-row-email">“${esc(r.note)}”</div>` : ""}</div><div class="user-row-actions"></div>`;
+      const act = row.querySelector(".user-row-actions");
+      const mk = (label, cls, fn) => { const b = document.createElement("button"); b.className = "btn-small " + cls; b.textContent = label; b.addEventListener("click", async () => { b.disabled = true; try { await fn(); } catch (err) { alert("Failed: " + err.message); b.disabled = false; } }); act.appendChild(b); };
+      mk("Send reset link", "", async () => { await sendPasswordResetEmail(auth, r.email); showToast("Reset link sent to " + r.email, null, null, 5000); });
+      mk("Remove old profile", "btn-danger", async () => {
+        if (!confirm(`Remove the app profile of ${r.email}?\nDo this AFTER you deleted the login in Firebase Console. The person then signs up again with the same email and you approve them.`)) throw new Error("cancelled");
+        const found = await getDocs(query(collection(db, "users"), where("email", "==", r.email)));
+        for (const d of found.docs) if (d.id !== MASTER_GOD_UID) await deleteDoc(doc(db, "users", d.id));
+        showToast("Old profile removed. Now they can use Request access again.", null, null, 6000);
+      });
+      mk("Done", "btn-approve", () => updateDoc(doc(db, "resetRequests", r.id), { status: "done" }));
+      list.appendChild(row);
+    });
+  }, () => {});
 }
 
 function renderUserList(container, users, isPendingList) {
@@ -2040,6 +2396,28 @@ onId("import-confirm-btn", "click", async () => {
   const setRow = (i, t) => { const el = document.getElementById(`import-status-${i}`); if (el) el.textContent = t; };
   const todo = importQueue.map((row, i) => ({ row, i })).filter((x) => !x.row.skip);
 
+  // progress bar + time left
+  let prog = document.getElementById("import-progress");
+  if (!prog) {
+    prog = document.createElement("div"); prog.id = "import-progress"; prog.className = "progress";
+    prog.innerHTML = `<div class="pbar"><i></i></div><div class="ptext"></div>`;
+    statusBox.after(prog);
+  }
+  prog.hidden = false;
+  document.getElementById("import-failed-btn")?.remove();
+  const startedAt = Date.now();
+  const fmt = (sec) => (sec >= 90 ? Math.round(sec / 60) + " min" : Math.max(1, Math.round(sec)) + " sec");
+  const paint = (done, failedN) => {
+    const pct = todo.length ? Math.round((done / todo.length) * 100) : 100;
+    prog.querySelector("i").style.width = pct + "%";
+    let eta = "";
+    if (done > 0 && done < todo.length) eta = ` · about ${fmt(((Date.now() - startedAt) / done) * (todo.length - done) / 1000)} left`;
+    prog.querySelector(".ptext").textContent = `${pct}% — ${done} of ${todo.length} rows${failedN ? `, ${failedN} failed` : ""}${eta}`;
+  };
+  paint(0, 0);
+  const warnLeave = (e) => { e.preventDefault(); e.returnValue = ""; };
+  window.addEventListener("beforeunload", warnLeave);
+
   let running = 0; const waiting = [];
   const limit = async (fn) => {
     while (running >= 3) await new Promise((r) => waiting.push(r));
@@ -2058,10 +2436,10 @@ onId("import-confirm-btn", "click", async () => {
     prep.get(i).catch(() => {}); // errors are handled below, in order
   });
 
-  let ok = 0, failed = 0;
+  let ok = 0, failed = 0; const failures = [];
   for (let n = 0; n < todo.length; n++) {
     const { row, i } = todo[n];
-    statusBox.textContent = `Importing… ${n} of ${todo.length} done` + (failed ? `, ${failed} failed` : "") + ". Keep this tab open.";
+    statusBox.textContent = `Importing… keep this tab open.`;
     try {
       const { photoUrl, embedding } = await prep.get(i);
       setRow(i, "saving…");
@@ -2081,13 +2459,39 @@ onId("import-confirm-btn", "click", async () => {
       ok++;
     } catch (err) {
       setRow(i, "failed: " + err.message);
+      failures.push({ article: row.article, error: err.message });
       failed++;
     }
+    paint(n + 1, failed);
   }
+  window.removeEventListener("beforeunload", warnLeave);
   btn.disabled = false;
   if (ok) logAudit("imported", "", `${ok} saved, ${failed} failed`);
   statusBox.textContent = `Import finished: ${ok} saved` + (failed ? `, ${failed} failed (upload the same file again — rows already saved are skipped)` : "") + ".";
+  if (failures.length) {
+    const fb = document.createElement("button");
+    fb.id = "import-failed-btn"; fb.type = "button"; fb.className = "btn-small"; fb.style.marginLeft = "10px";
+    fb.textContent = "Download failed rows (CSV)";
+    fb.addEventListener("click", () => {
+      const csv = "Article,Error\n" + failures.map((f) => `"${String(f.article).replace(/"/g, '""')}","${String(f.error).replace(/"/g, '""')}"`).join("\n");
+      const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "import-failed-rows.csv";
+      document.body.appendChild(a); a.click(); a.remove();
+    });
+    prog.querySelector(".ptext").appendChild(fb);
+  }
   invalidateSotCache();
+});
+
+// Blank template (same columns the importer reads)
+onId("import-template", "click", async () => {
+  try {
+    const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+    const X = XLSX.default || XLSX;
+    const head = ["S/L", "CUSTOMER", "BRAND", "CATEGORY", "ARTICLE", "SOT", ...BUSINESS_SOT_OPERATIONS.map((o) => o.toUpperCase())];
+    const wb = X.utils.book_new();
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([head, [1, "Customer name", "Brand name", "Category", "ART-001", "", ...BUSINESS_SOT_OPERATIONS.map(() => "")]]), "SOT");
+    X.writeFile(wb, "SOT-import-template.xlsx");
+  } catch (err) { alert("Could not create the template: " + err.message); }
 });
 
 function dataUrlToFile(dataUrl, filename) {
