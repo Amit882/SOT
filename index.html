@@ -42,6 +42,7 @@
         <button type="button" id="forgot-back" class="btn-link">Back to sign in</button>
       </form>
     </div>
+    <p class="build-tag">Build ai-pro-v15</p>
 
     <form id="form-signup" class="stack" hidden>
       <label class="field"><span>Full name</span><input type="text" id="signup-name" required /></label>
@@ -144,7 +145,8 @@
       </div>
       <p class="status-line" id="master-count"></p>
       <div class="master-wrap"><table class="master-table" id="master-table"></table></div>
-      <button type="button" id="master-more" class="btn-small" style="margin-top:12px;" hidden>Show more</button>
+      <div id="master-pager" class="pager" hidden></div>
+      <button type="button" id="master-more" class="btn-small" hidden>Show more</button>
     </section>
 
     <!-- Add SOT -->
@@ -300,7 +302,7 @@
 <script type="module" src="cloudinary-config.js"></script>
 <script>
 (function () {
-  var HTML_BUILD = "ai-pro-v14";
+  var HTML_BUILD = "ai-pro-v15";
   function banner(msg) {
     var d = document.getElementById("boot-error");
     if (!d) { d = document.createElement("div"); d.id = "boot-error"; d.title = "Click to hide"; d.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:2000;background:#A63A32;color:#fff;padding:10px 16px;font:14px system-ui,sans-serif;text-align:center;cursor:pointer"; d.onclick = function () { d.remove(); }; document.body.appendChild(d); }
