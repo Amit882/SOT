@@ -42,7 +42,7 @@
         <button type="button" id="forgot-back" class="btn-link">Back to sign in</button>
       </form>
     </div>
-    <p class="build-tag">Build ai-pro-v16</p>
+    <p class="build-tag">Build ai-pro-v17</p>
 
     <form id="form-signup" class="stack" hidden>
       <label class="field"><span>Full name</span><input type="text" id="signup-name" required /></label>
@@ -166,10 +166,6 @@
             <label class="field"><span>Article number</span><input type="text" id="add-article" required /></label>
             <label class="field field-wide"><span>Photo</span><input type="file" id="add-photo" accept="image/*" required /></label>
             <label class="field field-wide" id="copy-photo-bar" hidden style="flex-direction:row;align-items:center;gap:8px;"><input type="checkbox" id="copy-same-photo" checked style="width:auto;" /><span>Use the same photo as the original (or choose another photo above)</span></label>
-            <div class="field field-wide inc-box">
-              <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="add-incomplete" style="width:auto;" /><span>Incomplete — I will complete it later (it will show in Data quality)</span></label>
-              <input type="text" id="add-incomplete-note" maxlength="200" placeholder="What is missing? e.g. sole minutes" hidden />
-            </div>
             <label class="field field-wide"><span>More photos — side, top, sole (optional, you can pick several)</span><input type="file" id="add-photos-extra" accept="image/*" multiple /></label>
             <div id="extra-photo-list" class="extra-list field-wide"></div>
           </div>
@@ -194,6 +190,10 @@
           <p class="status-line" style="margin-top:10px;">Total: <span id="add-sot-total">0.0</span> min</p>
         </div>
 
+        <div class="inc-box inc-bottom">
+          <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="add-incomplete" style="width:auto;" /><span>Incomplete — I will complete it later (it will show in Data quality)</span></label>
+          <input type="text" id="add-incomplete-note" maxlength="200" placeholder="What is missing? e.g. sole minutes" hidden />
+        </div>
         <div id="add-status" class="status-line" hidden style="margin-top:20px;"></div>
         <button type="submit" class="btn btn-primary" style="margin-top:20px;">Save entry</button>
       </form>
@@ -306,7 +306,7 @@
 <script type="module" src="cloudinary-config.js"></script>
 <script>
 (function () {
-  var HTML_BUILD = "ai-pro-v16";
+  var HTML_BUILD = "ai-pro-v17";
   function banner(msg) {
     var d = document.getElementById("boot-error");
     if (!d) { d = document.createElement("div"); d.id = "boot-error"; d.title = "Click to hide"; d.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:2000;background:#A63A32;color:#fff;padding:10px 16px;font:14px system-ui,sans-serif;text-align:center;cursor:pointer"; d.onclick = function () { d.remove(); }; document.body.appendChild(d); }
