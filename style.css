@@ -360,3 +360,12 @@ button:focus-visible, .dropzone:focus-visible, .result-card:focus-visible, a:foc
   #print-sheet .p-extra { display: flex; gap: 6px; margin-top: 10px; } #print-sheet .p-extra img { height: 24mm; border: 1px solid #ccc; }
   #print-sheet .p-cols { display: flex; gap: 18px; margin-top: 6px; } #print-sheet .p-cols > div { flex: 1; }
 }
+
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0; }
+.pager[hidden] { display: none; }
+.pg { min-width: 34px; height: 34px; padding: 0 8px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); border-radius: 8px; font-weight: 600; cursor: pointer; }
+.pg:hover:not(:disabled):not(.on) { background: var(--thead); }
+.pg.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.pg:disabled { opacity: .45; cursor: default; }
+.pg.gap { border: 0; background: transparent; min-width: 18px; padding: 0; }
+.pg-info { margin-left: 8px; font-size: 13px; color: var(--ink-muted); }
