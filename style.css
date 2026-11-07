@@ -369,3 +369,6 @@ button:focus-visible, .dropzone:focus-visible, .result-card:focus-visible, a:foc
 .pg:disabled { opacity: .45; cursor: default; }
 .pg.gap { border: 0; background: transparent; min-width: 18px; padding: 0; }
 .pg-info { margin-left: 8px; font-size: 13px; color: var(--ink-muted); }
+
+.inc-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: var(--warn-bg); color: var(--warn); vertical-align: middle; }
+.inc-box { gap: 6px; }
